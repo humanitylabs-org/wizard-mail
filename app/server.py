@@ -16,13 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sources as sources_mod  # noqa: E402
-from sources import MailError  # noqa: E402
+from sources import MailError, OWNER  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.1.4'
-ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
+VERSION = '0.1.5'
+ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
 MAX_BODY = 128_000
@@ -53,6 +53,7 @@ class Config:
         self.trusted_origins = {f'http://{h}' for h in self.local_hosts} | {x.rstrip('/') for x in csv(get('WIZARD_TRUSTED_ORIGINS'))}
         self.frame_ancestors = get('WIZARD_FRAME_ANCESTORS', "'self'")
         self.sources = sources_mod.parse_sources(get('MAIL_SOURCES'))
+        self.grants_file = get('WIZARD_GRANTS_FILE', '/wizard/grants.json')
 
     def host_ok(self, host):
         return host in self.trusted_hosts or host.rsplit(':', 1)[0] in self.trusted_names
@@ -90,7 +91,8 @@ TOOLS = [
 ]
 
 
-def rpc(app, message):
+def rpc(app, message, caller=None):
+    caller = caller or sources_mod.agent(None)
     if not isinstance(message, dict) or message.get('jsonrpc') != '2.0' or not isinstance(message.get('method'), str):
         return {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32600, 'message': 'Invalid Request'}}
     if 'id' not in message:
@@ -111,14 +113,15 @@ def rpc(app, message):
         if not isinstance(args, dict):
             raise MailError(400, 'invalid_arguments', 'Arguments must be an object.')
         if name == 'mail_accounts':
-            value = box.accounts()
-            value['how'] = 'Pass an account key ("<source>:<email>") to the other tools. The owner sends drafts himself in Mail.'
+            value = box.accounts(caller)
+            value['how'] = ('Pass an account key ("<source>:<email>") to the other tools. The owner sends drafts himself in Mail. '
+                            'What agents may do is the owner\'s choice: agent_access per source (Mail > Settings > Agent access).')
         elif name == 'mail_list':
-            value = box.list(args.get('account'), args.get('folder') or 'inbox', args.get('query') or '', args.get('cursor'), args.get('max') or 10)
+            value = box.list(args.get('account'), args.get('folder') or 'inbox', args.get('query') or '', args.get('cursor'), args.get('max') or 10, caller)
         elif name == 'mail_read':
-            value = box.text(args.get('account'), args.get('id'))
+            value = box.text(args.get('account'), args.get('id'), caller)
         elif name == 'mail_draft':
-            value = box.draft(args.get('account'), args)
+            value = box.draft(args.get('account'), args, caller)
             value['next'] = 'Saved in Drafts, not sent. Tell the owner it is waiting in Mail.'
         else:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': -32602, 'message': 'Unknown tool'}}
@@ -132,7 +135,7 @@ def rpc(app, message):
 class App:
     def __init__(self, config, mailbox=None):
         self.config = config
-        self.mailbox = mailbox or sources_mod.Mailbox(config.sources)
+        self.mailbox = mailbox or sources_mod.Mailbox(config.sources, grants_file=config.grants_file)
 
 
 def handler_for(app):
@@ -212,9 +215,11 @@ def handler_for(app):
             host = (self.headers.get('Host') or '').lower()
             supplied = self.headers.get('Authorization', '')
             if config.admin_token and supplied and hmac.compare_digest(supplied, 'Bearer ' + config.admin_token):
-                return
+                return sources_mod.agent(self.headers.get('X-Wizard-Agent'))
             if not (host in config.local_hosts and not supplied):
                 raise MailError(401, 'not_box_local', 'MCP is for agents on this box.')
+            # An agent: Mail passes its name on and never its own grant, so the source applies the owner's agent level.
+            return sources_mod.agent(self.headers.get('X-Wizard-Agent'))
 
         def body(self):
             if (self.headers.get('Content-Type') or '').split(';')[0].strip().lower() != 'application/json':
@@ -245,12 +250,12 @@ def handler_for(app):
                 if path.startswith('/api/'):
                     self.owner_api()
                     if path == '/api/accounts':
-                        return self.send_json(200, box.accounts())
+                        return self.send_json(200, box.accounts(OWNER))
                     if path == '/api/messages':
                         return self.send_json(200, box.list(query.get('account') or 'all', query.get('folder') or 'inbox',
-                                                            query.get('q') or '', query.get('cursor') or None))
+                                                            query.get('q') or '', query.get('cursor') or None, caller=OWNER))
                     if path == '/api/message':
-                        return self.send_json(200, box.read(query.get('account'), query.get('id'), query.get('images') == '1'))
+                        return self.send_json(200, box.read(query.get('account'), query.get('id'), query.get('images') == '1', OWNER))
                     raise MailError(404, 'not_found', 'Not found.')
                 if path == '/mcp':
                     raise MailError(405, 'use_post', 'Use POST /mcp.')
@@ -274,19 +279,19 @@ def handler_for(app):
             try:
                 path = urllib.parse.urlsplit(self.path).path
                 if path == '/mcp':
-                    self.box_caller()
+                    caller = self.box_caller()
                     self.host()
-                    output = rpc(app, self.body())
+                    output = rpc(app, self.body(), caller)
                     return self.send_json(202 if output is None else 200, output or {})
                 self.owner_api(write=True)
                 body = self.body()
                 box = app.mailbox
                 if path == '/api/update':
-                    return self.send_json(200, box.update(body.get('account'), body.get('id'), body))
+                    return self.send_json(200, box.update(body.get('account'), body.get('id'), body, OWNER))
                 if path == '/api/draft':
-                    return self.send_json(200, box.draft(body.get('account'), body))
+                    return self.send_json(200, box.draft(body.get('account'), body, OWNER))
                 if path == '/api/send':
-                    return self.send_json(200, box.send(body.get('account'), body.get('draft_id')))
+                    return self.send_json(200, box.send(body.get('account'), body.get('draft_id'), OWNER))
                 raise MailError(404, 'not_found', 'Not found.')
             except MailError as problem:
                 self.fail(problem)

@@ -135,6 +135,47 @@ html.wz-hosted .wc-layer { background: var(--wz-panel, color-mix(in srgb, var(--
 .wc-layer-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--wz-space-3, 12px); padding: var(--wz-space-3, 12px); border-bottom: 1px solid var(--wz-border); }
 .wc-frame { flex: 1; width: 100%; border: 0; }
 
+/* Settings (settings.js), modelled on Messenger's: opaque sheet, flat brand tiles with a status dot, + tile, and one
+   Agent access row with a quiet picker. `wst-` prefix: host apps' generic classes leak in. */
+.wz-sheet.wst-sheet { width: min(100%, 520px); background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base)));
+  -webkit-backdrop-filter: none; backdrop-filter: none; --wst-raised: color-mix(in srgb, var(--wz-text) 6%, transparent); }
+.wz-sheet.wst-sheet > h2 { font-size: 1.25rem; margin-bottom: var(--wz-space-2, 8px); overflow-wrap: anywhere; }
+.wst-h { margin: 18px 0 8px; font-size: var(--wz-text-md, .875rem); font-weight: 600; color: var(--wz-text-secondary); text-transform: none; letter-spacing: 0; }
+.wst-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+.wst-tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 8px 2px; border: 0; border-radius: 12px;
+  background: none; color: var(--wz-text); font: inherit; font-size: .78rem; line-height: 1.2; text-align: center; cursor: pointer; }
+@media (hover: hover) { .wst-tile:hover { background: color-mix(in srgb, var(--wz-text) 6%, transparent); } }
+.wst-tile:focus-visible { outline: 2px solid var(--wz-accent); outline-offset: 1px; }
+.wst-icon { position: relative; display: inline-flex; }
+.wst-mark { display: block; width: 40px; height: 40px; }
+.wst-dot { position: absolute; right: -5px; bottom: -5px; width: 15px; height: 15px; border-radius: 50%;
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
+.wst-dot::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: var(--wz-success, var(--wz-accent)); }
+.wst-warn .wst-dot::after { background: var(--wz-warning, var(--wz-danger)); }
+.wst-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wst-sub { max-width: 100%; margin-top: -4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wz-text-muted); font-size: .7rem; }
+.wst-plus-mark { position: relative; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--wz-text) 9%, transparent); color: var(--wz-text-secondary); }
+.wst-plus-mark::before, .wst-plus-mark::after { content: ""; position: absolute; left: 50%; top: 50%; width: 16px; height: 2px; margin: -1px 0 0 -8px; border-radius: 1px; background: currentColor; }
+.wst-plus-mark::after { transform: rotate(90deg); }
+.wst-plus .wst-name { color: var(--wz-text-secondary); }
+.wst-group { border-radius: 14px; background: var(--wst-raised); overflow: hidden; }
+.wst-group > * + * { border-top: 1px solid var(--wz-border); }
+.wst-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 4px 6px 4px 14px; }
+.wst-agent { flex: none; font-weight: 600; white-space: nowrap; }
+.wz-sheet select.wst-level { flex: 0 1 auto; width: auto; min-width: 0; max-width: none; min-height: 44px; text-overflow: ellipsis; padding: 0 4px; border: 0; background: none; color: var(--wz-text-secondary);
+  font: inherit; font-size: 1rem; text-align: right; cursor: pointer; }
+.wz-sheet select.wst-level option { color: var(--wz-text); background: var(--wz-panel, var(--wz-base)); }
+.wst-note, .wst-muted { margin: 8px 2px 0; color: var(--wz-text-muted); font-size: var(--wz-text-sm, .8125rem); line-height: 1.4; }
+.wst-text { margin: 4px 0 0; color: var(--wz-text-secondary); line-height: 1.45; }
+.wst-bad { margin: 8px 0 0; color: var(--wz-danger); font-size: var(--wz-text-sm, .8125rem); }
+.wst-bad:empty { display: none; }
+.wst-fact { padding-right: 14px; }
+.wst-k { color: var(--wz-text-muted); flex: none; }
+.wst-v { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.wst-back { display: inline-block; margin: 0 0 10px; padding: 4px 0; border: 0; background: none; color: var(--wz-accent); font: inherit; cursor: pointer; }
+.wst-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.wz-button.wst-danger { color: var(--wz-danger); }
+
 /* two panes: list | reader */
 @container (min-width: 720px) {
   .wm { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }

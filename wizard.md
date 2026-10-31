@@ -4,7 +4,7 @@ id: wizard-mail
 name: Mail
 type: service
 category: app
-version: 0.1.4
+version: 0.1.5
 icon: icon.png
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
 tags: [communication, productivity]
@@ -45,6 +45,7 @@ Your email in Wizard: one inbox for every Google and Microsoft account you conne
 - **Read safely.** Messages render in a locked frame without scripts; pictures from the internet stay hidden until you tap Show pictures, so senders cannot track when you open their mail.
 - **Write, reply, forward.** Mail saves a draft in your mailbox, then sends it when you tap Send. Archive, delete (to Trash), mark unread, with Undo.
 - **Phone and desktop.** One column on a phone; list and reader side by side, plus mailboxes, on a wide window.
-- **For your agent:** `mail_accounts`, `mail_list`, `mail_read` and `mail_draft` over MCP at `/mcp` (box only). The agent can write drafts but cannot send: you send from Mail.
+- **Settings, like Messenger's.** Connected accounts as tiles (tap one to see or disconnect it, + to connect another) and Agent access: No access, Read-only or Draft only (recommended, the default).
+- **For your agent:** `mail_accounts`, `mail_list`, `mail_read` and `mail_draft` over MCP at `/mcp` (box only). The agent can write drafts but cannot send: you send from Mail. The Google and Microsoft apps enforce this themselves (their `mail_send` refuses agents), so it holds even when an agent calls them directly.
 
 Mail keeps no sign-ins and no copies of your mail. It asks the Google and Microsoft apps (contract `wizard.mail-calendar/1`), which hold the sign-ins.

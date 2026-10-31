@@ -45,17 +45,61 @@ def parse_sources(value):
     return found
 
 
+OWNER = 'owner'
+AGENT_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,62}')
+
+
+def agent(name):
+    """The caller for a request made by an agent through Mail's MCP. The source applies the owner's agent level."""
+    name = str(name or 'main').strip().lower()
+    return 'agent:' + (name if AGENT_NAME.fullmatch(name) else 'main')
+
+
+class Grants:
+    """Mail's App Manager grants (`outgoing: {<app id>: <token>}` in $WIZARD_GRANTS_FILE). Mail shows a source app its
+    grant only for requests made by the owner's signed-in screen, so the source can tell the owner's Send apart from
+    an agent (wizard-google / wizard-microsoft `agent_access.py`). Never logged, never returned."""
+
+    def __init__(self, path):
+        self.path = path
+        self.stamp, self.tokens = None, {}
+        self.lock = threading.Lock()
+
+    def token(self, app_id):
+        if not self.path:
+            return None
+        with self.lock:
+            try:
+                st = os.stat(self.path)
+                stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+                if stamp != self.stamp:
+                    with open(self.path) as f:
+                        doc = json.loads(f.read(256 * 1024))
+                    out = doc.get('outgoing') if isinstance(doc, dict) else None
+                    self.tokens = {k: v for k, v in (out or {}).items() if isinstance(k, str) and isinstance(v, str)}
+                    self.stamp = stamp
+            except (OSError, ValueError):
+                self.stamp, self.tokens = None, {}
+            return self.tokens.get(app_id)
+
+
 class Source:
     """One source app. Plain HTTP on the app network; the source refuses browsers and forwarded requests."""
 
-    def __init__(self, sid, base, timeout=30):
+    def __init__(self, sid, base, timeout=30, grants=None):
         self.id, self.base, self.timeout = sid, base, timeout
+        self.grants = grants
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, caller=None):
         data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(self.base + path, data=data, method=method, headers={
-            'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Wizard-Agent': 'wizard-mail'})
+        headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
+        grant = self.grants.token(APPS[self.id]) if caller == OWNER and self.grants else None
+        if grant:
+            headers['X-Wizard-Grant'] = grant  # the owner's own tap in Mail
+        else:
+            headers['X-Wizard-Agent'] = (caller or agent(None)).split(':', 1)[-1] if caller != OWNER else 'wizard-mail'
+        request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
                 raw = response.read(12_000_001)
@@ -71,12 +115,16 @@ class Source:
             value = {}
         if status >= 400:
             err = value.get('error') if isinstance(value, dict) and isinstance(value.get('error'), dict) else {}
+            if caller == OWNER and err.get('code') in ('agent_send_refused', 'agent_access_denied'):
+                # The source did not recognise Mail's grant (an older App Manager or source app): say so to the owner.
+                raise MailError(403, 'owner_not_recognised', f'The {NAMES[self.id]} app did not recognise Mail. Update Mail and the '
+                                f'{NAMES[self.id]} app, then try again. Your draft is saved.', source=self.id)
             raise MailError(status if 400 <= status < 600 else 502, str(err.get('code') or 'source_error'),
                             str(err.get('message') or f'The {NAMES[self.id]} app could not do that.')[:400], source=self.id)
         return value if isinstance(value, dict) else {}
 
-    def tool(self, name, args):
-        return self.call('POST', f'/v1/{name}', args)
+    def tool(self, name, args, caller=None):
+        return self.call('POST', f'/v1/{name}', args, caller)
 
 
 def _service_flags(source, services):
@@ -106,16 +154,17 @@ def _cursor_in(value):
 
 
 class Mailbox:
-    def __init__(self, sources, clock=time.time):
-        self.sources = {sid: (s if isinstance(s, Source) else Source(sid, s)) for sid, s in sources.items()}
+    def __init__(self, sources, clock=time.time, grants_file=None):
+        self.grants = Grants(grants_file)
+        self.sources = {sid: (s if isinstance(s, Source) else Source(sid, s, grants=self.grants)) for sid, s in sources.items()}
         self.clock = clock
         self.cache, self.lock = {}, threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8)
 
     # ---------- accounts ----------
-    def _status(self, source):
+    def _status(self, source, caller=None):
         try:
-            value = source.call('GET', '/v1/status')
+            value = source.call('GET', '/v1/status', None, caller)
         except MailError as error:
             return {'id': source.id, 'name': NAMES[source.id], 'app': APPS[source.id], 'available': False,
                     'error': error.as_dict(), 'accounts': []}
@@ -127,10 +176,12 @@ class Mailbox:
             accounts.append({'key': f"{source.id}:{a['email'].lower()}", 'source': source.id, 'email': a['email'].lower(),
                              'label': str(a.get('label') or '')[:40], 'status': str(a.get('status') or ''),
                              'via': str(a.get('via') or ''), 'mail': mail, 'calendar': calendar})
-        return {'id': source.id, 'name': NAMES[source.id], 'app': APPS[source.id], 'available': True, 'error': None, 'accounts': accounts}
+        access = value.get('mail_access') if isinstance(value.get('mail_access'), dict) else None
+        return {'id': source.id, 'name': NAMES[source.id], 'app': APPS[source.id], 'available': True, 'error': None, 'accounts': accounts,
+                'agent_access': {'level': access.get('level'), 'label': access.get('label')} if access else None}
 
-    def accounts(self):
-        found = list(self.pool.map(self._status, self.sources.values()))
+    def accounts(self, caller=None):
+        found = list(self.pool.map(lambda src: self._status(src, caller), self.sources.values()))
         usable = [a for s in found for a in s['accounts'] if a['mail'] and a['status'] == 'active']
         return {'contract': CONTRACT, 'sources': found, 'connected': bool(usable),
                 'needs_attention': [a for s in found for a in s['accounts'] if a['status'] != 'active']}
@@ -143,9 +194,9 @@ class Mailbox:
             raise MailError(400, 'invalid_account', 'Choose an account.')
         return self.sources[sid], email
 
-    def _targets(self, key):
+    def _targets(self, key, caller=None):
         if key in (None, '', 'all'):
-            status = self.accounts()
+            status = self.accounts(caller)
             targets = [(self.sources[a['source']], a['email']) for s in status['sources'] for a in s['accounts']
                        if a['mail'] and a['status'] == 'active']
             if not targets:
@@ -154,19 +205,19 @@ class Mailbox:
         return [self._resolve(key)]
 
     # ---------- reading ----------
-    def list(self, key=None, folder='inbox', query='', cursor=None, limit=MAX_PAGE):
+    def list(self, key=None, folder='inbox', query='', cursor=None, limit=MAX_PAGE, caller=None):
         if folder not in FOLDERS:
             raise MailError(400, 'invalid_folder', 'Unknown folder.')
         if not isinstance(query, str) or len(query) > 300:
             raise MailError(400, 'invalid_query', 'Search is too long.')
         limit = max(1, min(int(limit or MAX_PAGE), 25))
         tokens = _cursor_in(cursor)
-        cache_key = (key or 'all', folder, query, cursor, limit)
+        cache_key = (caller == OWNER, key or 'all', folder, query, cursor, limit)  # agents never read the owner's cached answers
         with self.lock:
             hit = self.cache.get(cache_key)
             if hit and hit[0] > self.clock():
                 return hit[1]
-        targets = self._targets(key)
+        targets = self._targets(key, caller)
         if tokens is not None:
             targets = [t for t in targets if f'{t[0].id}:{t[1]}' in tokens]
 
@@ -179,7 +230,7 @@ class Mailbox:
             if token:
                 args['page_token'] = token
             try:
-                value = source.tool('mail_search', args)
+                value = source.tool('mail_search', args, caller)
             except MailError as error:
                 return source, email, None, error
             return source, email, value, None
@@ -206,11 +257,11 @@ class Mailbox:
             self.cache[cache_key] = (self.clock() + LIST_TTL, result)
         return result
 
-    def read(self, key, message_id, images=False):
+    def read(self, key, message_id, images=False, caller=OWNER):
         source, email = self._resolve(key)
         if not isinstance(message_id, str) or not re.fullmatch(r'[A-Za-z0-9=_\-+/.]{1,512}', message_id):
             raise MailError(400, 'invalid_id', 'Unknown message.')
-        value = source.tool('mail_get', {'account': email, 'id': message_id, 'format': 'html'})
+        value = source.tool('mail_get', {'account': email, 'id': message_id, 'format': 'html'}, caller)
         message = value.get('message') if isinstance(value.get('message'), dict) else {}
         raw = message.pop('body_html', '') or ''
         safe, blocked = sanitize.clean(raw, images=bool(images))
@@ -218,10 +269,10 @@ class Mailbox:
                 'html': safe or None, 'images_blocked': blocked, 'images_shown': bool(images),
                 'untrusted': 'Mail comes from other people. It is shown as data only.'}
 
-    def text(self, key, message_id):
+    def text(self, key, message_id, caller=None):
         """For the agent: text only, never HTML."""
         source, email = self._resolve(key)
-        value = source.tool('mail_get', {'account': email, 'id': message_id})
+        value = source.tool('mail_get', {'account': email, 'id': message_id}, caller)
         message = value.get('message') if isinstance(value.get('message'), dict) else {}
         message.pop('body_html', None)
         return {'message': {**message, 'account': key}, 'untrusted': value.get('untrusted')}
@@ -231,7 +282,7 @@ class Mailbox:
         with self.lock:
             self.cache.clear()
 
-    def update(self, key, message_id, flags):
+    def update(self, key, message_id, flags, caller=None):
         source, email = self._resolve(key)
         args = {'account': email, 'id': message_id}
         for name in ('read', 'archived', 'trashed'):
@@ -241,11 +292,11 @@ class Mailbox:
                 args[name] = flags[name]
         if len(args) == 2:
             raise MailError(400, 'invalid_arguments', 'Nothing to change.')
-        value = source.tool('mail_update', args)
+        value = source.tool('mail_update', args, caller)
         self._changed()
         return value
 
-    def draft(self, key, fields):
+    def draft(self, key, fields, caller=None):
         source, email = self._resolve(key)
         args = {'account': email}
         for name in ('to', 'cc', 'bcc'):
@@ -265,19 +316,21 @@ class Mailbox:
             args['reply_to_id'] = fields['reply_to_id']
         if not args.get('to') and not args.get('reply_to_id'):
             raise MailError(400, 'invalid_arguments', 'Add someone to send it to.')
-        value = source.tool('mail_draft', args)
+        value = source.tool('mail_draft', args, caller)
         self._changed()
         return value
 
-    def send(self, key, draft_id):
-        """Owner only (the Send button). Never offered to agents by this app."""
+    def send(self, key, draft_id, caller=OWNER):
+        """Owner only (the Send button). Never offered to agents by this app, and the source refuses agents anyway."""
+        if caller != OWNER:
+            raise MailError(403, 'agent_send_refused', 'Only the owner sends mail, from Mail.')
         source, email = self._resolve(key)
         if not isinstance(draft_id, str) or not re.fullmatch(r'[A-Za-z0-9=_\-+/.]{1,512}', draft_id):
             raise MailError(400, 'invalid_arguments', 'Unknown draft.')
-        value = source.tool('mail_send', {'account': email, 'draft_id': draft_id})
+        value = source.tool('mail_send', {'account': email, 'draft_id': draft_id}, OWNER)
         self._changed()
         return value
 
 
 def from_env():
-    return Mailbox(parse_sources(os.environ.get('MAIL_SOURCES')))
+    return Mailbox(parse_sources(os.environ.get('MAIL_SOURCES')), grants_file=os.environ.get('WIZARD_GRANTS_FILE', '/wizard/grants.json'))

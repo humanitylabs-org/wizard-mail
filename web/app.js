@@ -51,7 +51,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.4' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.5' });
     window.WizardApp.back.register({
       canGoBack: () => state.view === 'reader' && narrow(),
       back: () => { if (!(state.view === 'reader' && narrow())) return false; closeReader(); return true; },
@@ -81,11 +81,20 @@
     for (const s of (state.accounts ? state.accounts.sources : [])) out[s.id] = s.available;
     return out;
   }
-  function connect(source) {
+  function connect(source, backToSettings) {
     window.WizardConnect.open({ purpose: 'mail', source, available: available(), onDone: async result => {
       if (result && result.email) say(`Connected ${result.email}.`);
       if (await loadAccounts().catch(() => false)) load(true);
+      if (backToSettings) openSettings();
     } });
+  }
+  // Settings (settings.js): connected accounts and what agents may do with mail, modelled on Messenger's.
+  function openSettings() {
+    window.WizardMailSettings.open({
+      accounts: () => state.accounts, say,
+      connect: source => connect(source, true),
+      changed: async () => { if (await loadAccounts().catch(() => false)) load(true); else { state.messages = []; renderList(); } },
+    });
   }
   function renderConnect() {
     const box = $('.wm-connect');
@@ -443,6 +452,7 @@
     const name = act.dataset.act;
     if (name === 'write') compose();
     else if (name === 'add') connect();
+    else if (name === 'settings') openSettings();
     else if (name === 'scope') scopeSheet();
     else if (name === 'refresh') { loadAccounts().then(ok => ok && load(true)).catch(err => say(err.message)); }
     else if (name === 'more') load(false);

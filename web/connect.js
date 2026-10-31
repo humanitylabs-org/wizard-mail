@@ -199,5 +199,6 @@
     }
   }
 
-  window.WizardConnect = { open, sources: SOURCES };
+  // `client(id)` is the same-origin owner client for one source app (used by Settings for accounts and agent access).
+  window.WizardConnect = { open, sources: SOURCES, client: id => client(SOURCES[id]) };
 })();

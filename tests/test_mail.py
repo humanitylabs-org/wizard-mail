@@ -3,6 +3,7 @@ nothing talks to Google, Microsoft or Composio."""
 import http.client
 import json
 import sys
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,7 @@ class FakeSource:
     def __init__(self, sid, accounts):
         self.sid, self.accounts, self.calls, self.drafts, self.sent, self.flags = sid, accounts, [], {}, [], {}
         self.fail = None
+        self.grant = f'grant-for-wizard-mail-at-{sid}'  # what the App Manager gave Mail for this source
         source = self
 
         class H(BaseHTTPRequestHandler):
@@ -46,10 +48,15 @@ class FakeSource:
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 tool = self.path.rsplit('/', 1)[1]
                 source.calls.append(('POST', tool, body, self.headers.get('X-Wizard-Agent')))
+                source.grants_seen.append(self.headers.get('X-Wizard-Grant'))
                 if source.fail:
                     return self.reply(*source.fail)
+                # Like the real sources (agent_access.py): only Mail's grant may send.
+                if tool == 'mail_send' and self.headers.get('X-Wizard-Grant') != source.grant:
+                    return self.reply(403, {'error': {'code': 'agent_send_refused', 'message': 'Agents can\'t send mail.'}})
                 self.reply(200, source.tool(tool, body))
 
+        self.grants_seen = []
         self.srv = ThreadingHTTPServer(('127.0.0.1', 0), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f'http://127.0.0.1:{self.srv.server_address[1]}'
@@ -138,7 +145,9 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.g = FakeSource('google', accounts(('me@gmail.com', 'active', ['gmail', 'calendar'])))
         self.m = FakeSource('microsoft', accounts(('me@outlook.com', 'active', ['mail', 'calendar']), ('old@hotmail.com', 'reauth_required', ['mail'])))
-        self.box = sources.Mailbox({'google': self.g.base, 'microsoft': self.m.base})
+        self.grants_file = Path(tempfile.mkdtemp()) / 'grants.json'
+        self.grants_file.write_text(json.dumps({'outgoing': {'wizard-google': self.g.grant, 'wizard-microsoft': self.m.grant}}))
+        self.box = sources.Mailbox({'google': self.g.base, 'microsoft': self.m.base}, grants_file=str(self.grants_file))
 
     def tearDown(self):
         self.g.close()
@@ -157,7 +166,10 @@ class MailboxTests(Base):
         self.assertEqual({m['account'] for m in page['messages']}, {'google:me@gmail.com', 'microsoft:me@outlook.com'})
         searched = [c for c in self.g.calls if c[1] == 'mail_search'][0]
         self.assertEqual(searched[2], {'account': 'me@gmail.com', 'folder': 'inbox', 'max': 20})
-        self.assertEqual(searched[3], 'wizard-mail')
+        self.assertEqual(searched[3], 'main')  # no caller given: an agent, never Mail's grant
+        self.assertEqual(self.g.grants_seen[0], None)
+        self.box.list('all', 'inbox', caller=sources.OWNER)
+        self.assertEqual(self.g.grants_seen[-1], self.g.grant)  # the owner's screen: Mail shows its grant
         self.assertNotIn('old@hotmail.com', json.dumps([c for c in self.m.calls if c[1] == 'mail_search']))
         more = self.box.list('all', 'inbox', cursor=page['cursor'])
         self.assertEqual(sorted(m['id'] for m in more['messages']), ['g0p2', 'm0p2'])
@@ -184,9 +196,19 @@ class MailboxTests(Base):
         self.assertNotIn('format', [c for c in self.g.calls if c[1] == 'mail_get'][-1][2])
 
     def test_draft_then_send_and_validation(self):
-        d = self.box.draft('microsoft:me@outlook.com', {'to': ['a@example.com'], 'subject': 'Hi', 'body': 'Hello'})
+        d = self.box.draft('microsoft:me@outlook.com', {'to': ['a@example.com'], 'subject': 'Hi', 'body': 'Hello'}, sources.agent('main'))
         self.assertEqual(self.m.sent, [])
-        self.box.send('microsoft:me@outlook.com', d['draft']['id'])
+        with self.assertRaises(sources.MailError) as refused:
+            self.box.send('microsoft:me@outlook.com', d['draft']['id'], sources.agent('main'))
+        self.assertEqual(refused.exception.code, 'agent_send_refused')
+        self.box.send('microsoft:me@outlook.com', d['draft']['id'])  # the owner's Send
+        self.assertEqual(len(self.m.sent), 1)
+        # Without Mail's grant on file the source refuses, and the owner is told what to do (draft kept).
+        d = self.box.draft('microsoft:me@outlook.com', {'to': ['a@example.com'], 'body': 'Again'}, sources.OWNER)
+        self.grants_file.write_text('{}')
+        with self.assertRaises(sources.MailError) as refused:
+            self.box.send('microsoft:me@outlook.com', d['draft']['id'])
+        self.assertEqual(refused.exception.code, 'owner_not_recognised')
         self.assertEqual(len(self.m.sent), 1)
         for bad in ({'to': ['nope']}, {'to': []}, {'to': 'a@example.com'}, {'to': ['a@example.com'], 'subject': 'x' * 301}):
             with self.assertRaises(sources.MailError):
@@ -221,7 +243,7 @@ class HttpTests(Base):
     def setUp(self):
         super().setUp()
         config = server.Config({'PORT': '0', 'WIZARD_TRUSTED_HOSTS': 'box.tail.ts.net', 'WIZARD_OWNER_LOGINS': 'owner@example.com',
-                                'MAIL_SOURCES': f'google={self.g.base},microsoft={self.m.base}'})
+                                'MAIL_SOURCES': f'google={self.g.base},microsoft={self.m.base}', 'WIZARD_GRANTS_FILE': str(self.grants_file)})
         self.srv, self.app = server.serve(config)
         self.port = self.srv.server_address[1]
         config.local_hosts |= {f'127.0.0.1:{self.port}'}
@@ -259,6 +281,9 @@ class HttpTests(Base):
         self.assertIn('app-client.js', page)
         self.assertIn("frame-src 'self'", r.getheader('Content-Security-Policy'))
         self.assertEqual(self.req('GET', '/healthz', owner=False)[1]['app'], 'wizard-mail')
+        status, js, _ = self.req('GET', '/settings.js', owner=False)
+        self.assertEqual(status, 200)
+        self.assertIn('api/agent-access', js)  # Settings writes the level only through the source apps' owner routes
         status, acc, _ = self.req('GET', '/api/accounts')
         self.assertEqual((status, acc['connected']), (200, True))
         status, page, _ = self.req('GET', '/api/messages?account=all&folder=inbox')
@@ -282,6 +307,7 @@ class HttpTests(Base):
         self.assertEqual(status, 200, d)
         status, s, _ = self.req('POST', '/api/send', {'account': 'microsoft:me@outlook.com', 'draft_id': d['draft']['id']})
         self.assertEqual((status, s['sent'], len(self.m.sent)), (200, True, 1))
+        self.assertTrue(all(g == self.m.grant for g in self.m.grants_seen))  # every owner call carried Mail's grant
         status, u, _ = self.req('POST', '/api/update', {'account': 'microsoft:me@outlook.com', 'id': 'm0', 'archived': True})
         self.assertEqual((status, u['id']), (200, 'm0M'))
         self.assertEqual(self.req('POST', '/api/update', {'account': 'microsoft:me@outlook.com', 'id': 'm0', 'archived': 'yes'})[0], 400)
@@ -302,6 +328,9 @@ class HttpTests(Base):
         drafted = call('mail_draft', {'account': 'google:me@gmail.com', 'reply_to_id': 'g0', 'body': 'Thanks'})['structuredContent']
         self.assertFalse(drafted['sent'])
         self.assertEqual(self.g.sent, [])
+        # Agent calls through Mail never carry Mail's grant: the source applies the owner's agent level to them.
+        self.assertEqual(set(self.g.grants_seen), {None})
+        self.assertEqual({c[3] for c in self.g.calls if c[0] == 'POST'}, {'main'})
         refused = self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'mail_send', 'arguments': {'draft_id': 'd1'}}},
                            headers={'Host': f'127.0.0.1:{self.port}'}, owner=False)[1]
         self.assertEqual(refused['error']['message'], 'Unknown tool')
