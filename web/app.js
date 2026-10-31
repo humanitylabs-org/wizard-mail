@@ -51,7 +51,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.2' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.3' });
     window.WizardApp.back.register({
       canGoBack: () => state.view === 'reader' && narrow(),
       back: () => { if (!(state.view === 'reader' && narrow())) return false; closeReader(); return true; },

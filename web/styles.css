@@ -121,11 +121,11 @@ html[data-presentation="immersive"] .wm-list { padding-bottom: calc(var(--pad) +
 .wc-bad { color: var(--wz-danger); }
 .wc-steps { list-style: none; padding: 0; margin: var(--wz-space-3, 12px) 0; display: grid; gap: 6px; }
 .wc-steps li { display: flex; gap: var(--wz-space-2, 8px); align-items: center; color: var(--wz-text-muted); }
-.wc-steps li.now { color: var(--wz-text); font-weight: 600; }
-.wc-steps li.done { color: var(--wz-text-secondary); }
+.wc-steps li.wc-now { color: var(--wz-text); font-weight: 600; }
+.wc-steps li.wc-done { color: var(--wz-text-secondary); }
 .wc-dot { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: .75rem; border: 1.5px solid currentColor; }
-.wc-steps li.done .wc-dot { background: var(--wz-accent); color: var(--wz-on-accent); border-color: transparent; }
-.wc-steps li.now .wc-dot { border-color: var(--wz-accent); }
+.wc-steps li.wc-done .wc-dot { background: var(--wz-accent); color: var(--wz-on-accent); border-color: transparent; }
+.wc-steps li.wc-now .wc-dot { border-color: var(--wz-accent); }
 .wc-spin { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--wz-text) 18%, transparent); border-top-color: var(--wz-accent);
   animation: wc-spin 1s linear infinite; margin: var(--wz-space-2, 8px) 0; }
 @keyframes wc-spin { to { transform: rotate(360deg); } }

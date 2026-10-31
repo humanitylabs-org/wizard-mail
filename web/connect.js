@@ -147,7 +147,7 @@
         : `In the new window, choose your ${src.name} account and allow access${v && v.label ? ` for ${v.label}` : ''}. This updates by itself.`;
     const steps = el('ol', null, 'wc-steps');
     for (const s of ((v || out).steps || [])) {
-      const li = el('li', null, s.done ? 'done' : (v && s.id === v.step ? 'now' : ''));
+      const li = el('li', null, s.done ? 'wc-done' : (v && s.id === v.step ? 'wc-now' : ''));
       li.append(el('span', s.done ? '✓' : '', 'wc-dot', { 'aria-hidden': 'true' }), el('span', s.label));
       steps.append(li);
     }
