@@ -3,13 +3,18 @@
 /* Standalone light preview: the pinned tokens are dark-only, so sheets need a light overlay of their own. */
 @media (prefers-color-scheme: light) { html:not([data-color-scheme]) { --wz-overlay: color-mix(in srgb, var(--wz-base) 94%, transparent); } }
 
-.wz-app.wm-root { container-type: inline-size; height: 100dvh; overflow: hidden; padding: 0; display: block; }
-.wm { --pad: var(--wz-space-3, 12px); --line: var(--wz-border); display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; }
+.wz-app.wm-root { container: wmroot / inline-size; height: 100dvh; overflow: hidden; padding: 0; display: block; }
+.wm { --pad: var(--wz-space-3, 12px); --line: var(--wz-border); position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; }
 .wm-side { display: none; }
-.wm-listpane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.wm-reader { display: none; min-height: 0; min-width: 0; overflow: auto; }
-.wm[data-view="reader"] .wm-listpane { display: none; }
-.wm[data-view="reader"] .wm-reader { display: block; }
+.wm-listpane { display: flex; flex-direction: column; min-height: 0; min-width: 0; container: wmlist / inline-size; }
+/* List and detail (Miguel, 31 Oct 2026): the list always stays; a message opens beside it on wide windows and slides
+   over it on narrow ones (the list underneath keeps its scroll). Back, Escape and ✕ close the reader. */
+.wm-reader { min-height: 0; min-width: 0; overflow: auto; position: absolute; inset: 0; z-index: 3; visibility: hidden; transform: translateX(100%);
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 6%, var(--wz-base)));
+  transition: transform .22s var(--wz-ease, ease), visibility 0s linear .22s; }
+.wm[data-view="reader"] .wm-reader { visibility: visible; transform: none; transition: transform .22s var(--wz-ease, ease), visibility 0s; }
+@media (prefers-reduced-motion: reduce) { .wm-reader, .wm[data-view="reader"] .wm-reader { transition: none; } }
+.wm-rbar .wm-close { display: none; }
 .wm.wm-empty-box .wm-listpane, .wm.wm-empty-box .wm-reader, .wm.wm-empty-box .wm-side { display: none; }
 .wm-connect { overflow: auto; padding: var(--wz-space-5, 24px) var(--pad); display: grid; place-items: start center; }
 
@@ -111,7 +116,7 @@
   transition: opacity var(--wz-motion-fast, .15s) var(--wz-ease, ease), transform var(--wz-motion-fast, .15s) var(--wz-ease, ease); max-width: calc(100% - 32px); }
 .wm-toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .wm-undo { background: none; border: 0; color: var(--wz-accent); font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
-html[data-presentation="immersive"] .wm-rbar { padding-top: 46px; }
+html[data-presentation="immersive"] .wm-rbar, html[data-presentation="immersive"] .wm-top { padding-top: 46px; }
 html[data-presentation="immersive"] .wm-list { padding-bottom: calc(var(--pad) + 40px); }
 
 /* connect sheet and "your own app" layer (connect.js) */
@@ -176,19 +181,47 @@ html.wz-hosted .wc-layer { background: var(--wz-panel, color-mix(in srgb, var(--
 .wst-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .wz-button.wst-danger { color: var(--wz-danger); }
 
-/* two panes: list | reader */
-@container (min-width: 720px) {
-  .wm { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }
-  .wm[data-view] .wm-listpane { display: flex; border-right: 1px solid var(--line); }
-  .wm[data-view] .wm-reader { display: block; }
+/* wide: the list fills the window until a message opens, then the reader sits on its right */
+@container wmroot (min-width: 720px) {
+  .wm-reader { position: static; visibility: visible; transform: none; transition: none; display: none; background: none; }
+  .wm[data-view="reader"] { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); }
+  .wm[data-view="reader"] .wm-listpane { border-right: 1px solid var(--line); }
+  .wm[data-view="reader"] .wm-reader { display: block; }
   .wm-rbar .wm-back { display: none; }
+  .wm-rbar .wm-close { display: inline-flex; }
   .wm.wm-empty-box { grid-template-columns: minmax(0, 1fr); }
 }
 /* three panes: mailboxes | list | reader */
-@container (min-width: 1040px) {
-  .wm { grid-template-columns: 230px minmax(320px, 400px) minmax(0, 1fr); }
+@container wmroot (min-width: 1040px) {
+  .wm { grid-template-columns: 220px minmax(0, 1fr); }
+  .wm[data-view="reader"] { grid-template-columns: 220px minmax(300px, 360px) minmax(0, 1fr); }
   .wm-side { display: flex; flex-direction: column; gap: var(--wz-space-2, 8px); padding: var(--pad); border-right: 1px solid var(--line); overflow: auto; min-height: 0; }
   .wm-top .wm-scope, .wm-top .wm-write-top, .wm-listpane .wm-folders { display: none; }
   .wm-listpane .wm-top { padding-top: var(--wz-space-3, 12px); }
 }
+.wm.wm-empty-box .wm-reader { display: none; }
+
+/* Compact list (default): no picture and no preview; two short lines in a narrow list, one line in a wide one. */
+.wm-compact .wm-item { padding: 8px 10px; align-items: center; }
+.wm-compact .wm-item + .wm-item::before { left: 10px; }
+.wm-compact .wm-itemmain { gap: 0; }
+.wm-compact .wm-subj { font-size: var(--wz-text-sm, .8125rem); }
+.wm-compact .wm-unread { top: 50%; margin-top: -4px; }
+@container wmlist (min-width: 600px) {
+  .wm-compact .wm-itemmain { grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr) auto; column-gap: var(--wz-space-4, 16px); align-items: baseline; }
+  .wm-compact .wm-line { display: contents; }
+  .wm-compact .wm-from { order: 1; }
+  .wm-compact .wm-subj { order: 2; font-size: inherit; }
+  .wm-compact .wm-when { order: 3; }
+  .wm-compact .wm-item { padding-top: 9px; padding-bottom: 9px; }
+}
+/* Settings: the list's own option */
+.wst-switch-row { cursor: pointer; padding-right: 14px; }
+.wst-switch { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 44px; height: 26px; margin: 0; border-radius: 13px; cursor: pointer;
+  background: color-mix(in srgb, var(--wz-text) 22%, transparent); transition: background-color .15s; }
+.wst-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--wz-on-accent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--wz-text) 30%, transparent); transition: transform .15s; }
+.wst-switch:checked { background: var(--wz-accent); }
+.wst-switch:checked::after { transform: translateX(18px); }
+.wst-switch:focus-visible { outline: 2px solid var(--wz-accent); outline-offset: 2px; }
 

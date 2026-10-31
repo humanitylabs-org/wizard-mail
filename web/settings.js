@@ -94,6 +94,7 @@
     const parts = [el('h3', 'Connected accounts', 'wst-h'), tiles];
     if (!data.sources.some(s => s.accounts.length)) parts.push(el('p', 'Connect Google or Microsoft to see your mail here.', 'wst-muted'));
     parts.push(...agentAccess());
+    if (opts.setPreviews) parts.push(...listOptions());
     frame('Settings', ...parts);
   }
   function tile(s, a) {
@@ -107,6 +108,17 @@
     return b;
   }
 
+  // ---------- the list: message previews are off by default (compact), remembered on this device ----------
+  function listOptions() {
+    const group = el('div', null, 'wst-group');
+    const row = el('label', null, 'wst-row wst-switch-row');
+    const sw = el('input', null, 'wst-switch', { type: 'checkbox', role: 'switch' });
+    sw.checked = !!opts.previews();
+    sw.onchange = () => opts.setPreviews(sw.checked);
+    row.append(el('span', 'Message previews in the list', 'wst-agent'), sw);
+    group.append(row);
+    return [el('h3', 'Mail list', 'wst-h'), group];
+  }
   // ---------- agent access: one row, Messenger's picker ----------
   function agentAccess() {
     const known = data.sources.filter(s => s.access);

@@ -48,13 +48,24 @@
   function accountName(key) { const a = mailAccounts().find(x => x.key === key); return a ? (a.label || a.email) : 'All inboxes'; }
   function narrow() { return root.clientWidth < 720; }
   function setView(v) { state.view = v; root.dataset.view = v; }
+  // Compact list (Miguel's default): sender, subject, time and the unread dot; Settings brings previews back.
+  // Kept on this device only.
+  const PREVIEWS = 'wizard-mail.previews';
+  function previewsOn() { try { return localStorage.getItem(PREVIEWS) === '1'; } catch (_) { return false; } }
+  function setPreviews(on) {
+    try { if (on) localStorage.setItem(PREVIEWS, '1'); else localStorage.removeItem(PREVIEWS); } catch (_) {}
+    root.classList.toggle('wm-compact', !on);
+    renderList();
+  }
+  root.classList.toggle('wm-compact', !previewsOn());
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.5' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.6' });
     window.WizardApp.back.register({
-      canGoBack: () => state.view === 'reader' && narrow(),
-      back: () => { if (!(state.view === 'reader' && narrow())) return false; closeReader(); return true; },
+      // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
+      canGoBack: () => state.view === 'reader',
+      back: () => { if (state.view !== 'reader') return false; closeReader(); return true; },
     });
   }
 
@@ -91,7 +102,7 @@
   // Settings (settings.js): connected accounts and what agents may do with mail, modelled on Messenger's.
   function openSettings() {
     window.WizardMailSettings.open({
-      accounts: () => state.accounts, say,
+      accounts: () => state.accounts, say, previews: previewsOn, setPreviews,
       connect: source => connect(source, true),
       changed: async () => { if (await loadAccounts().catch(() => false)) load(true); else { state.messages = []; renderList(); } },
     });
@@ -195,15 +206,18 @@
     const sent = state.folder === 'sent' || state.folder === 'drafts';
     const name = sent ? (m.to && m.to.length ? 'To ' + m.to.map(who).join(', ') : '(no recipient)') : (who(m.from) || '(unknown sender)');
     const b = el('button', null, 'wm-item' + (m.unread ? ' unread' : '') + (state.open && state.open.id === m.id ? ' on' : ''), { type: 'button', role: 'listitem' });
+    b.dataset.id = m.id;
     b.onclick = () => openMessage(m);
     const top = el('span', null, 'wm-line');
     top.append(el('b', name, 'wm-from'), el('time', when(m.date), 'wm-when', { datetime: m.date || '' }));
     const subj = el('span', m.subject || '(no subject)', 'wm-subj');
-    const snip = el('span', m.snippet || '', 'wm-snip');
-    b.append(el('span', initial(name.replace(/^To /, '')), 'wz-tile wm-avatar', { 'aria-hidden': 'true' }));
     const main = el('span', null, 'wm-itemmain');
-    main.append(top, subj, snip);
-    if (many) main.append(el('span', m.account_email, 'wm-acct'));
+    main.append(top, subj);
+    if (previewsOn()) {
+      b.append(el('span', initial(name.replace(/^To /, '')), 'wz-tile wm-avatar', { 'aria-hidden': 'true' }));
+      main.append(el('span', m.snippet || '', 'wm-snip'));
+      if (many) main.append(el('span', m.account_email, 'wm-acct'));
+    } else if (many) b.title = m.account_email || '';
     b.append(main);
     if (m.unread) b.append(el('span', '', 'wm-unread', { 'aria-label': 'Unread' }));
     return b;
@@ -211,17 +225,22 @@
 
   // ---------- reader ----------
   let frameObserver = null;
+  function markOpen() {
+    for (const n of listEl.querySelectorAll('.wm-item')) n.classList.toggle('on', !!(state.open && n.dataset.id === state.open.id));
+  }
   function closeReader() {
+    const was = state.open && listEl.querySelector('.wm-item.on');
     state.open = null;
     if (frameObserver) { frameObserver.disconnect(); frameObserver = null; }
-    reader.replaceChildren(el('div', null, 'wm-placeholder'));
-    reader.firstChild.append(el('span', '✉', 'wz-tile', { 'aria-hidden': 'true' }), el('p', 'Choose a message to read it.'));
     setView('list');
-    for (const n of listEl.querySelectorAll('.wm-item.on')) n.classList.remove('on');
+    markOpen();
+    // Empty the pane after it has slid away (phone) so the list underneath never jumps.
+    setTimeout(() => { if (state.view === 'list') reader.replaceChildren(); }, 260);
+    if (was) try { was.focus({ preventScroll: true }); } catch (_) {}
   }
   async function openMessage(m, images) {
     state.open = { id: m.id, account: m.account, summary: m };
-    renderList();
+    markOpen();
     setView('reader');
     reader.replaceChildren(el('div', 'Opening…', 'wm-loading'));
     let v;
@@ -237,7 +256,8 @@
     renderReader(m, v);
     if (m.unread && state.folder !== 'drafts') {
       m.unread = false;
-      renderList();
+      const row = listEl.querySelector(`.wm-item[data-id="${CSS.escape(m.id)}"]`);
+      if (row) { row.classList.remove('unread'); const dot = row.querySelector('.wm-unread'); if (dot) dot.remove(); }
       api('api/update', { account: m.account, id: m.id, read: true }).catch(() => {});
     }
   }
@@ -246,6 +266,8 @@
     const bar = el('div', null, 'wm-rbar');
     bar.append(button('‹ Back', closeReader, 'wm-icon wm-back', { 'aria-label': 'Back to the list' }));
     bar.append(el('span', null, 'wm-grow'));
+    const x = button('', closeReader, 'wm-icon wm-close', { 'aria-label': 'Close', title: 'Close (Esc)' });
+    x.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
     if (state.folder === 'drafts') {
       bar.append(button('Edit and send', () => compose({ mode: 'draft', from: m.account, msg }), 'wz-button'));
     } else {
@@ -286,6 +308,7 @@
       for (const a of msg.attachments) att.append(el('li', `📎 ${a.name}${a.size ? ` · ${Math.max(1, Math.round(a.size / 1024))} KB` : ''}`));
       body.append(att);
     }
+    bar.append(x);
     reader.replaceChildren(bar, head, body);
     reader.scrollTop = 0;
   }
