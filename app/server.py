@@ -21,8 +21,8 @@ from sources import MailError  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.1.3'
-ASSETS = {'index.html', 'app.js', 'connect.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
+VERSION = '0.1.4'
+ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
 MAX_BODY = 128_000

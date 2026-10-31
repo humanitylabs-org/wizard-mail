@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = sorted(['openapi.json'] + [f'app/{p.name}' for p in (ROOT / 'app').glob('*.py') if p.name != 'build_view.py']
-               + [f'web/{p.name}' for p in (ROOT / 'web').iterdir() if p.suffix in ('.html', '.js', '.css')])
+               + [f'web/{p.name}' for p in (ROOT / 'web').iterdir() if p.suffix in ('.html', '.js', '.css', '.svg')])
 IMAGE = 'python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4'
 PORT = 18818
 LOADER = ("import base64,json,pathlib,runpy,zlib\nroot=pathlib.Path('/tmp/wizard-app');root.mkdir(exist_ok=True)\n"
