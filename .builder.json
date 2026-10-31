@@ -1,0 +1,6 @@
+{
+  "request": "A clean mail client for my connected Google and Microsoft accounts",
+  "template": "hello-wizard",
+  "state": "local_draft",
+  "name": "Mail"
+}

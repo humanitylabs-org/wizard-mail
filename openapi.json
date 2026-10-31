@@ -1,0 +1,353 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Wizard Mail",
+  "version": "0.1.0",
+  "description": "Owner API behind the Mail page (owner login, same origin). Mail holds no sign-ins: it asks the Google and Microsoft apps (wizard.mail-calendar/1)."
+ },
+ "paths": {
+  "/healthz": {
+   "get": {
+    "summary": "Health",
+    "responses": {
+     "200": {
+      "description": "{ok, app, version}"
+     }
+    }
+   }
+  },
+  "/api/accounts": {
+   "get": {
+    "summary": "Mail sources (Google, Microsoft), whether each app is reachable, and the accounts with mail on.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{sources[], connected, needs_attention[]}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/messages": {
+   "get": {
+    "summary": "Newest first, across all accounts or one.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     },
+     {
+      "name": "account",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "\"all\" or an account key \"<source>:<email>\""
+     },
+     {
+      "name": "folder",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "inbox, sent, drafts, archive, trash or all"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Search words"
+     },
+     {
+      "name": "cursor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "From the previous page"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{folder, messages[], cursor, errors[]}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/message": {
+   "get": {
+    "summary": "One message; HTML cleaned (no scripts, remote pictures only with images=1).",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     },
+     {
+      "name": "account",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Account key"
+     },
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Message id"
+     },
+     {
+      "name": "images",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "1 shows remote pictures"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{message, html, images_blocked, images_shown}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/update": {
+   "post": {
+    "summary": "Mark read/unread, archive or trash (reversible).",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "account",
+         "id"
+        ],
+        "properties": {
+         "account": {
+          "type": "string"
+         },
+         "id": {
+          "type": "string"
+         },
+         "read": {
+          "type": "boolean"
+         },
+         "archived": {
+          "type": "boolean"
+         },
+         "trashed": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{updated, id, unread, archived, trashed}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/draft": {
+   "post": {
+    "summary": "Save a draft in the mailbox (never sends).",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "account"
+        ],
+        "properties": {
+         "account": {
+          "type": "string"
+         },
+         "to": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "cc": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "bcc": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "subject": {
+          "type": "string"
+         },
+         "body": {
+          "type": "string"
+         },
+         "reply_to_id": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{draft, sent:false}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/send": {
+   "post": {
+    "summary": "Send one draft. Owner page only (the Send button); agents cannot send through Mail.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "account",
+         "draft_id"
+        ],
+        "properties": {
+         "account": {
+          "type": "string"
+         },
+         "draft_id": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{sent:true}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/mcp": {
+   "post": {
+    "summary": "MCP for agents on this box: mail_accounts, mail_list, mail_read, mail_draft (no send).",
+    "responses": {
+     "200": {
+      "description": "JSON-RPC"
+     }
+    }
+   }
+  }
+ }
+}

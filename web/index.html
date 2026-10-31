@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en" data-app="wizard-mail">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Mail</title>
+  <script src="boot.js"></script>
+  <link rel="stylesheet" href="wizard-tokens.css">
+  <link rel="stylesheet" href="wizard-ui.css">
+  <link rel="stylesheet" href="standalone.css">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="/wizard-os-home/core/app-client.js"></script>
+  <script defer src="wizard-sheet.js"></script>
+  <script defer src="connect.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="wz-app wm-root">
+    <div class="wm" data-view="list">
+      <aside class="wm-side" aria-label="Mailboxes">
+        <button type="button" class="wz-button wm-write" data-act="write">Write</button>
+        <nav class="wm-nav wm-nav-accounts" aria-label="Accounts"></nav>
+        <nav class="wm-nav wm-nav-folders" aria-label="Folders"></nav>
+        <button type="button" class="wm-add" data-act="add">+ Add account</button>
+      </aside>
+      <section class="wm-listpane" aria-label="Messages">
+        <div class="wm-top">
+          <button type="button" class="wz-chip wm-scope" data-act="scope" aria-haspopup="dialog">All inboxes</button>
+          <span class="wm-grow"></span>
+          <button type="button" class="wm-icon" data-act="refresh" aria-label="Refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg></button>
+          <button type="button" class="wz-button wm-write wm-write-top" data-act="write">Write</button>
+        </div>
+        <form class="wm-search" role="search" autocomplete="off">
+          <input class="wz-field" type="search" name="q" placeholder="Search mail" aria-label="Search mail" enterkeyhint="search" maxlength="300">
+        </form>
+        <div class="wm-folders" role="tablist" aria-label="Folders"></div>
+        <div class="wm-banner" hidden></div>
+        <div class="wm-list" role="list" aria-live="polite"></div>
+        <button type="button" class="wz-button secondary wm-more" data-act="more" hidden>Load more</button>
+      </section>
+      <section class="wm-reader" aria-label="Message">
+        <div class="wm-placeholder"><span class="wz-tile" aria-hidden="true">✉</span><p>Choose a message to read it.</p></div>
+      </section>
+      <section class="wm-connect" hidden></section>
+    </div>
+    <p class="wz-status wm-toast" role="status" aria-live="polite"></p>
+  </div>
+</body>
+</html>
