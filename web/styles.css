@@ -111,6 +111,7 @@
   transition: opacity var(--wz-motion-fast, .15s) var(--wz-ease, ease), transform var(--wz-motion-fast, .15s) var(--wz-ease, ease); max-width: calc(100% - 32px); }
 .wm-toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .wm-undo { background: none; border: 0; color: var(--wz-accent); font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
+html[data-presentation="immersive"] .wm-rbar { padding-top: 46px; }
 html[data-presentation="immersive"] .wm-list { padding-bottom: calc(var(--pad) + 40px); }
 
 /* connect sheet and "your own app" layer (connect.js) */

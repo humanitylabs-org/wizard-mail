@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Wizard Mail",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Owner API behind the Mail page (owner login, same origin). Mail holds no sign-ins: it asks the Google and Microsoft apps (wizard.mail-calendar/1)."
  },
  "paths": {

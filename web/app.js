@@ -51,7 +51,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.1' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.2' });
     window.WizardApp.back.register({
       canGoBack: () => state.view === 'reader' && narrow(),
       back: () => { if (!(state.view === 'reader' && narrow())) return false; closeReader(); return true; },
@@ -118,7 +118,7 @@
       const b = button('', () => pickScope(a.key), 'wm-navitem' + (state.scope === a.key ? ' on' : ''));
       const text = el('span', null, 'wm-navtext');
       text.append(el('b', a.label || (a.source === 'google' ? 'Google' : 'Microsoft')), el('small', a.email));
-      b.append(el('span', initial(a.email), 'wm-dot', { 'aria-hidden': 'true' }), text);
+      b.append(el('span', initial(a.label || (a.source === 'google' ? 'G' : 'M')), 'wm-dot', { 'aria-hidden': 'true' }), text);
       nav.append(b);
     }
     const folders = $('.wm-nav-folders');

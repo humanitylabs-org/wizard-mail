@@ -1,8 +1,9 @@
 /* Wizard connect sheet: connect Google or Microsoft from inside Mail or Calendar, without leaving the window.
  * Talks to the source apps' owner routes on this same origin (/wizard-google/, /wizard-microsoft/; see
- * docs/mail-calendar-contract.md "Connecting from another app" in either source app). The Quick connect popup is
- * opened from the tap itself, so browsers allow it; it signs in to Composio when needed, then Google or Microsoft,
- * and closes by itself. Shared by wizard-mail and wizard-calendar (same file in both). Needs wizard-sheet.js. */
+ * docs/mail-calendar-contract.md "Connecting from another app" in either source app). The Quick connect window is
+ * opened from the tap itself (prepared beforehand), on the box's other address so Wizard hands it to the browser,
+ * where Google and Microsoft allow sign-in. It signs in to Composio when needed, then Google or Microsoft, and closes
+ * by itself while this sheet follows along. Shared by wizard-mail and wizard-calendar (same file). Uses wizard-sheet.js when present. */
 (() => {
   'use strict';
   const NOTE = 'Quick connect goes through Composio, a third party. They hold the sign-in keys, so technically they can access ' +
@@ -61,18 +62,20 @@
   }
 
   // ---------- sheets ----------
+  // The kit's sheet (wizard-sheet.js) when the app has it; a plain modal dialog otherwise.
+  const Sheet = () => window.WzSheet || { open: d => { if (!d.open) d.showModal(); }, close: d => d.close() };
   let dialog = null, onDone = null, purpose = 'mail', polling = null, seq = 0;
   function sheet(title, ...children) {
     if (!dialog) {
       dialog = el('dialog', null, 'wz-sheet wc-sheet', { 'aria-labelledby': 'wc-title' });
       document.body.append(dialog);
-      dialog.addEventListener('close', () => stop());
+      dialog.addEventListener('close', () => { stop(); discard(); });
     }
     dialog.replaceChildren(el('h2', title, null, { id: 'wc-title' }), ...children);
-    window.WzSheet.open(dialog);
+    Sheet().open(dialog);
     return dialog;
   }
-  function close() { stop(); if (dialog && dialog.open) window.WzSheet.close(dialog); }
+  function close() { stop(); if (dialog && dialog.open) Sheet().close(dialog); }
   function stop() { if (polling) { clearInterval(polling); polling = null; } seq++; }
 
   function open(opts) {
@@ -88,87 +91,92 @@
       el('p', 'You can add more accounts later, and use both.', 'muted'));
   }
 
-  function choose(src) {
-    const list = el('div', null, 'wz-list');
-    const also = purpose === 'mail' ? 'calendar' : 'mail';
-    let both = true;
-    list.append(row('Quick connect', src.id === 'google' ? 'About a minute, through Composio. Gmail and Calendar.'
-      : 'About a minute, through Composio. Mail and calendar.', () => quick(src, both), '✦'));
-    list.append(row(src.own, src.ownSub, () => own(src), '⚙'));
-    const kids = [list];
-    if (src.id === 'google') {
-      const t = el('button', `Also connect ${also === 'calendar' ? 'Calendar' : 'Gmail'}`, 'wz-chip wc-also', { type: 'button', 'aria-pressed': 'true' });
-      t.onclick = () => { both = !both; t.setAttribute('aria-pressed', String(both)); };
-      kids.push(el('div', null, 'wc-row'));
-      kids[kids.length - 1].append(t);
-    }
-    kids.push(el('p', NOTE, 'muted wc-note'));
-    sheet(`Connect ${src.name}`, ...kids);
+  // Quick connect is prepared while the owner reads the choices, so the tap itself opens the sign-in window: Wizard
+  // hands windows for other addresses to the browser, and browsers only allow a window opened inside a tap.
+  let prepared = null;
+  function prepare(src) {
+    const services = src.id === 'google' ? (purpose === 'mail' ? ['gmail', 'calendar'] : ['calendar', 'gmail']) : undefined;
+    const p = { src, out: null, error: null, used: false };
+    p.ready = client(src).api('api/quick/flow', services ? { services } : {}).then(out => { p.out = out; return out; }, e => { p.error = e; throw e; });
+    p.ready.catch(() => {});
+    return p;
+  }
+  function discard() {
+    const p = prepared; prepared = null;
+    if (p && !p.used) p.ready.then(out => client(p.src).api('api/quick/flow/cancel', { flow: out.flow })).catch(() => {});
+  }
+  const windowUrl = out => new URL(out.go_out || out.go, location.href).href;
+  function openWindow(url) {
+    try { window.open(url, '_blank', 'noopener'); } catch (_) { return false; }
+    return true;
   }
 
-  async function quick(src, both) {
-    // Open the window inside the tap, before any await, or the browser blocks it.
-    const tab = window.open('', '_blank');
+  function choose(src) {
+    discard();
+    prepared = prepare(src);
+    const list = el('div', null, 'wz-list');
+    list.append(row('Quick connect', src.id === 'google' ? 'About a minute, through Composio. Gmail and Calendar together.'
+      : 'About a minute, through Composio. Mail and calendar together.', () => quick(src), '✦'));
+    list.append(row(src.own, src.ownSub, () => { discard(); own(src); }, '⚙'));
+    sheet(`Connect ${src.name}`, list, el('p', NOTE, 'muted wc-note'));
+  }
+
+  async function quick(src) {
+    const p = prepared && prepared.src === src ? prepared : prepare(src);
+    prepared = null;
+    p.used = true;
     stop();
-    const c = client(src);
-    const services = src.id === 'google' ? (both ? (purpose === 'mail' ? ['gmail', 'calendar'] : ['calendar', 'gmail']) : [purpose === 'mail' ? 'gmail' : 'calendar']) : undefined;
+    const opened = !!p.out && openWindow(windowUrl(p.out)); // inside the tap: the window opens straight away
     try {
-      const out = await c.api('api/quick/flow', services ? { services } : {});
-      const go = new URL(out.go, location.origin).href;
-      if (tab) { tab.opener = null; tab.location.href = go; }
-      progress(src, out.flow, go, tab, null);
-      poll(src, out.flow, go, tab);
+      const out = await p.ready;
+      progress(src, out, null, !opened);
+      poll(src, out);
     } catch (e) {
-      if (tab) tab.close();
       sheet(`Connect ${src.name}`, el('p', e.message, 'wc-bad'), actions(button('Try again', () => choose(src))));
     }
   }
 
   function button(text, fn, cls = 'wz-button') { const b = el('button', text, cls, { type: 'button' }); b.onclick = fn; return b; }
   function actions(...b) { const a = el('div', null, 'wz-actions'); a.append(...b); return a; }
+  function link(text, href, cls) { return el('a', text, cls, { href, target: '_blank', rel: 'noopener' }); }
 
-  function progress(src, flow, go, tab, v) {
-    const where = v && v.where;
-    const text = where === 'composio'
-      ? 'Sign in to Composio, or create a free account, in the new window. Wizard saves the key by itself.'
-      : `Choose your ${src.name} account and allow access${v && v.label ? ` for ${v.label}` : ''}. This updates by itself.`;
+  function progress(src, out, v, first) {
+    const where = v ? v.where : (out.steps && out.steps[0] && out.steps[0].id === 'composio' ? 'composio' : null);
+    const text = first ? `Open the sign-in window to connect ${src.name}.`
+      : where === 'composio' ? 'In the new window, sign in to Composio or create a free account. Wizard saves the key by itself, then asks ' + src.name + '.'
+        : `In the new window, choose your ${src.name} account and allow access${v && v.label ? ` for ${v.label}` : ''}. This updates by itself.`;
     const steps = el('ol', null, 'wc-steps');
-    for (const s of (v ? v.steps : [])) {
+    for (const s of ((v || out).steps || [])) {
       const li = el('li', null, s.done ? 'done' : (v && s.id === v.step ? 'now' : ''));
       li.append(el('span', s.done ? '✓' : '', 'wc-dot', { 'aria-hidden': 'true' }), el('span', s.label));
       steps.append(li);
     }
-    const shown = tab && !tab.closed;
-    sheet('Finish in the new window', el('p', text, 'muted'), steps, el('div', null, 'wc-spin', { 'aria-hidden': 'true' }),
-      actions(button(shown ? 'Show the window' : 'Continue', () => { const t = window.open(go, '_blank'); if (t) { t.opener = null; poll(src, flow, go, t); } }, 'wz-button secondary'),
-        button('Cancel', () => { client(src).api('api/quick/flow/cancel', { flow }).catch(() => {}); if (tab && !tab.closed) tab.close(); close(); }, 'wz-button secondary')));
+    const url = windowUrl(out);
+    sheet(first ? `Connect ${src.name}` : 'Finish in the new window', el('p', text, 'muted'), steps, first ? '' : el('div', null, 'wc-spin', { 'aria-hidden': 'true' }),
+      actions(link(first ? 'Open the sign-in window ↗' : 'Open the window again ↗', url, first ? 'wz-button' : 'wz-button secondary'),
+        button('Cancel', () => { client(src).api('api/quick/flow/cancel', { flow: out.flow }).catch(() => {}); close(); }, 'wz-button secondary')));
   }
 
-  function poll(src, flow, go, tab) {
+  function poll(src, out) {
     stop();
     const mine = seq;
-    let where = null, shown = '';
+    let shown = '';
     polling = setInterval(async () => {
       let v;
-      try { v = await client(src).api('api/quick/flow?flow=' + encodeURIComponent(flow)); } catch { return; }
+      try { v = await client(src).api('api/quick/flow?flow=' + encodeURIComponent(out.flow)); } catch { return; }
       if (mine !== seq) return;
       if (v.state === 'done') {
-        if (tab && !tab.closed) tab.close();
         close();
         onDone({ source: src.id, email: v.result && v.result.email, connected: v.connected });
         return;
       }
       if (v.state !== 'running') {
-        if (tab && !tab.closed) tab.close();
         stop();
         sheet(`Connect ${src.name}`, el('p', (v.error && v.error.message) || 'The sign-in stopped.', 'wc-bad'), actions(button('Try again', () => choose(src))));
         return;
       }
-      // Composio's own page does not send the window back: once the key has landed, point it at the next sign-in.
-      if (where === 'composio' && v.where !== 'composio' && tab && !tab.closed) { try { tab.location.href = go; } catch (_) { /* gone */ } }
-      where = v.where;
-      const sig = `${v.step}|${v.where}|${tab && tab.closed}`;
-      if (sig !== shown) { shown = sig; progress(src, flow, go, tab, v); }
+      const sig = `${v.step}|${v.where}`;
+      if (sig !== shown) { shown = sig; progress(src, out, v, false); }
     }, 1500);
   }
 
