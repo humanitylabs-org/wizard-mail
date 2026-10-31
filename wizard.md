@@ -4,7 +4,7 @@ id: wizard-mail
 name: Mail
 type: service
 category: app
-version: 0.1.0
+version: 0.1.1
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
 tags: [communication, productivity]
 license: GPL-3.0-only
@@ -31,7 +31,7 @@ view:
     dist: web
 provides: [mail]
 system: false
-uses: [mail-calendar]
+uses: [mail-calendar, wizard-google, wizard-microsoft]
 needs: []
 health: /healthz
 ---
