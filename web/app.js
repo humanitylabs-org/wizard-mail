@@ -61,7 +61,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.1.6' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.2.0' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader',
@@ -258,7 +258,7 @@
       m.unread = false;
       const row = listEl.querySelector(`.wm-item[data-id="${CSS.escape(m.id)}"]`);
       if (row) { row.classList.remove('unread'); const dot = row.querySelector('.wm-unread'); if (dot) dot.remove(); }
-      api('api/update', { account: m.account, id: m.id, read: true }).catch(() => {});
+      api('api/update', { account: m.account, id: m.id, read: true }).then(() => readOne(m)).catch(() => {});
     }
   }
   function renderReader(m, v) {
@@ -343,11 +343,13 @@
     try {
       const out = await api('api/update', { account: m.account, id: m.id, ...flags });
       const id = out.id || m.id;
+      readOne(m);
       say(done, async () => {
         try {
           await api('api/update', { account: m.account, id, ...undoFlags });
           state.messages.splice(Math.max(0, at), 0, { ...m, id });
           renderList();
+          refreshBadge(true);
         } catch (e) { say(e.message); }
       });
     } catch (e) {
@@ -360,7 +362,7 @@
     m.unread = true;
     renderList();
     closeReader();
-    try { await api('api/update', { account: m.account, id: m.id, read: false }); say('Marked unread'); }
+    try { await api('api/update', { account: m.account, id: m.id, read: false }); say('Marked unread'); refreshBadge(true); }
     catch (e) { say(e.message); }
   }
 
@@ -488,7 +490,36 @@
   addEventListener('focus', maybeRefresh);
   new ResizeObserver(() => root.classList.toggle('wm-narrow', narrow())).observe(root);
 
-  loadAccounts().then(ok => { if (ok) load(true); }).catch(e => {
+  // ---------- badge and Wizard inbox links ----------
+  // The badge counts the unread inbox mail the Wizard inbox feed lists (api/inbox, newest 50), so the icon and
+  // Chats always show the same number. Items open here as #msg=<account>:<id>.
+  let unreadKeys = new Set(), badgeAt = 0;
+  async function refreshBadge(force) {
+    if (!force && Date.now() - badgeAt < 60_000) return;
+    badgeAt = Date.now();
+    try {
+      const r = await fetch('api/inbox', { credentials: 'same-origin', cache: 'no-store' });
+      const v = r.ok ? await r.json() : null;
+      if (!v || !Array.isArray(v.items)) return;
+      unreadKeys = new Set(v.items.map(i => i.key));
+      if (window.WizardApp && WizardApp.badge) WizardApp.badge.set(v.items.length);
+    } catch (_) {}
+  }
+  function readOne(m) {
+    if (unreadKeys.delete(`msg:${m.account}:${m.id}`) && window.WizardApp && WizardApp.badge) WizardApp.badge.set(unreadKeys.size);
+  }
+  function openFromLink() {
+    const hit = /^#msg=([^:]+):(.+)$/.exec(location.hash || '');
+    if (!hit) return;
+    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (_) {}
+    const account = decodeURIComponent(hit[1]), id = decodeURIComponent(hit[2]);
+    const known = state.messages.find(x => x.id === id && x.account === account);
+    openMessage(known || { id, account, unread: true });
+  }
+  addEventListener('hashchange', () => { if (mailAccounts().length) openFromLink(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshBadge(); });
+
+  loadAccounts().then(ok => { if (!ok) return; load(true); openFromLink(); refreshBadge(true); }).catch(e => {
     listEl.replaceChildren(el('div', null, 'wz-empty'));
     listEl.firstChild.append(el('strong', 'Mail is not available'), el('p', e.message));
   });

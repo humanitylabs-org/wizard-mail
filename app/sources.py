@@ -22,6 +22,8 @@ NAMES = {'google': 'Google', 'microsoft': 'Microsoft'}
 APPS = {'google': 'wizard-google', 'microsoft': 'wizard-microsoft'}
 FOLDERS = ('inbox', 'sent', 'drafts', 'archive', 'trash', 'all')
 LIST_TTL = 45
+INBOX_MAX = 50   # the Wizard inbox feed / badge list the newest unread mail, at most this many
+INBOX_TTL = 60
 MAX_PAGE = 20
 EMAIL = re.compile(r'^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$')
 
@@ -160,6 +162,7 @@ class Mailbox:
         self.clock = clock
         self.cache, self.lock = {}, threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8)
+        self.unread_snap, self.unread_job, self.unread_dirty, self.unread_gen = None, None, False, 0
 
     # ---------- accounts ----------
     def _status(self, source, caller=None):
@@ -257,6 +260,96 @@ class Mailbox:
             self.cache[cache_key] = (self.clock() + LIST_TTL, result)
         return result
 
+    def unread(self, cap=INBOX_MAX, wait=3.0):
+        """The owner's newest unread inbox mail across accounts, newest first, at most cap, as (messages, more).
+        Asking the providers takes seconds (Quick connect fetches each message), and the Wizard shell gives a feed
+        about 4 s, so this answers from a snapshot: fresh for INBOX_TTL, otherwise the last snapshot at once while
+        one refresh runs in the background. Reading, archiving or deleting in Mail updates the snapshot at once."""
+        with self.lock:
+            snap = self.unread_snap
+            if snap and not self.unread_dirty and snap[0] + INBOX_TTL > self.clock():
+                return snap[1], snap[2]
+            job = self.unread_job
+            if job is None or job['done'].is_set():
+                job = self.unread_job = {'done': threading.Event(), 'error': None}
+                threading.Thread(target=self._refresh_unread, args=(job, cap), daemon=True).start()
+        if snap:
+            return snap[1], snap[2]
+        if not job['done'].wait(wait):
+            raise MailError(503, 'still_loading', 'Mail is still loading your inbox. Try again in a moment.')
+        if job['error']:
+            raise job['error']
+        with self.lock:
+            return self.unread_snap[1], self.unread_snap[2]
+
+    def _refresh_unread(self, job, cap):
+        with self.lock:
+            gen = self.unread_gen
+        try:
+            out, more = self._fetch_unread(OWNER, cap)
+            with self.lock:
+                self.unread_snap = (self.clock(), out, more)
+                self.unread_dirty = self.unread_gen != gen   # something changed while asking: ask again next time
+        except Exception as error:  # noqa: BLE001 - the waiter (if any) gets it; the old snapshot stays
+            job['error'] = error if isinstance(error, MailError) else MailError(502, 'source_unavailable', 'Could not load mail.')
+        finally:
+            job['done'].set()
+
+    def _unread_changed(self, key, message_id, flags):
+        with self.lock:
+            self.unread_gen += 1
+            snap = self.unread_snap
+            if not snap:
+                return
+            if flags.get('read') is True or flags.get('archived') is True or flags.get('trashed') is True:
+                self.unread_snap = (snap[0], [m for m in snap[1] if not (m['account'] == key and m['id'] == message_id)], snap[2])
+            if flags.get('read') is False or flags.get('archived') is False or flags.get('trashed') is False:
+                self.unread_dirty = True
+
+    def _fetch_unread(self, caller=OWNER, cap=INBOX_MAX):
+        """Ask every connected account for its unread inbox mail (two pages of 25 at most)."""
+        try:
+            targets = self._targets('all', caller)
+        except MailError as error:
+            if error.code == 'not_connected':
+                return [], False
+            raise
+
+        def page(target, token=None):
+            source, email = target
+            args = {'account': email, 'folder': 'inbox', 'unread_only': True, 'max': 25}
+            if token:
+                args['page_token'] = token
+            try:
+                return target, source.tool('mail_search', args, caller), None
+            except MailError as error:
+                return target, None, error
+
+        found, more, failed = [], False, 0
+        firsts = list(self.pool.map(page, targets))
+        again = []
+        for target, value, error in firsts:
+            if error:
+                failed += 1
+                continue
+            rows = [m for m in value.get('messages') or [] if isinstance(m, dict) and isinstance(m.get('id'), str) and m.get('unread', True)]
+            found += [(target, m) for m in rows]
+            if value.get('next_page_token'):
+                again.append((target, str(value['next_page_token'])))
+        for target, value, error in self.pool.map(lambda a: page(*a), again):
+            if error or not value:
+                more = True
+                continue
+            found += [(target, m) for m in value.get('messages') or [] if isinstance(m, dict) and isinstance(m.get('id'), str) and m.get('unread', True)]
+            if value.get('next_page_token'):
+                more = True
+        if failed and failed == len(targets):
+            raise MailError(502, 'source_unavailable', 'Could not load mail.')
+        found.sort(key=lambda x: str(x[1].get('date') or ''), reverse=True)
+        more = more or len(found) > cap
+        out = [{**m, 'source': t[0].id, 'account': f'{t[0].id}:{t[1]}', 'account_email': t[1]} for t, m in found[:cap]]
+        return out, more
+
     def read(self, key, message_id, images=False, caller=OWNER):
         source, email = self._resolve(key)
         if not isinstance(message_id, str) or not re.fullmatch(r'[A-Za-z0-9=_\-+/.]{1,512}', message_id):
@@ -294,6 +387,7 @@ class Mailbox:
             raise MailError(400, 'invalid_arguments', 'Nothing to change.')
         value = source.tool('mail_update', args, caller)
         self._changed()
+        self._unread_changed(key, message_id, flags)
         return value
 
     def draft(self, key, fields, caller=None):

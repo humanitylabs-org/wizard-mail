@@ -3,12 +3,14 @@
 HTTP front: the owner's page and API, MCP for agents on this box. Mail holds no sign-ins; it asks the source apps
 (see sources.py). Stdlib only.
 """
+import datetime
 import hmac
 import json
 import mimetypes
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +23,7 @@ from sources import MailError, OWNER  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.1.6'
+VERSION = '0.2.0'
 ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
@@ -65,6 +67,29 @@ class Config:
         if host.rsplit(':', 1)[0] in self.trusted_names and host not in self.local_hosts:
             return f'https://{host}'
         return None
+
+
+def _epoch(value):
+    try:
+        return int(datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp())
+    except (TypeError, ValueError):
+        return 0
+
+
+def inbox_feed(box):
+    """Wizard OS inbox feed v1: one item per unread email in the inboxes (newest first, at most
+    sources.INBOX_MAX; `more` says there is unread mail beyond it). The same list the app badge counts.
+    Reading a message (in Mail or anywhere) drops it."""
+    messages, more = box.unread()
+    items = []
+    for m in messages:
+        sender = m.get('from') if isinstance(m.get('from'), dict) else {}
+        items.append({'key': f"msg:{m['account']}:{m['id']}",
+                      'title': str(sender.get('name') or sender.get('email') or 'Unknown sender')[:200],
+                      'text': (str(m.get('subject') or '').strip() or '(no subject)')[:2000],
+                      'time': _epoch(m.get('date')), 'priority': 3,
+                      'open': '#msg=' + urllib.parse.quote(m['account'], safe='') + ':' + urllib.parse.quote(m['id'], safe='')})
+    return {'inbox': 1, 'items': items, 'more': more}
 
 
 # ---------- MCP: read, search and draft. Never send. ----------
@@ -247,6 +272,12 @@ def handler_for(app):
                     self.host()
                     return self.send_json(200, {'ok': True, 'app': APP_ID, 'version': VERSION})
                 box = app.mailbox
+                if path == '/api/inbox':
+                    # Wizard OS inbox feed v1, read by the shell (same origin, no custom header). Owner only, read-only.
+                    self.owner()
+                    if (self.headers.get('Sec-Fetch-Site') or 'same-origin').lower() not in ('same-origin', 'none'):
+                        raise MailError(403, 'origin_rejected', 'Open Mail from your Wizard.')
+                    return self.send_json(200, inbox_feed(box))
                 if path.startswith('/api/'):
                     self.owner_api()
                     if path == '/api/accounts':
@@ -307,5 +338,12 @@ def serve(config, app=None):
 
 
 if __name__ == '__main__':
-    server, _ = serve(Config())
+    server, app = serve(Config())
+    # Warm the unread snapshot so the Wizard shell's first feed read answers at once.
+    def warm():
+        try:
+            app.mailbox.unread(wait=60)
+        except MailError:
+            pass
+    threading.Thread(target=warm, daemon=True).start()
     server.serve_forever()

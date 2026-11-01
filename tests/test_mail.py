@@ -69,6 +69,8 @@ class FakeSource:
             msgs = [{'id': f'{self.sid[0]}{i}{a.get("page_token") or ""}', 'thread_id': 't', 'from': {'name': 'Anna', 'email': 'anna@example.com'},
                      'to': [{'name': '', 'email': acct}], 'cc': [], 'subject': f'Hello {i}', 'date': f'2026-11-{day}T0{i}:00:00+00:00',
                      'snippet': 'Hi', 'unread': i == 0, 'labels': []} for i in range(n)]
+            if a.get('unread_only'):
+                msgs = [m for m in msgs if m['unread'] and m['id'] not in self.flags]
             return {'contract': 'wizard.mail-calendar/1', 'folder': a.get('folder'), 'messages': msgs,
                     'next_page_token': None if a.get('page_token') else 'p2', 'account': acct}
         if name == 'mail_get':
@@ -290,6 +292,33 @@ class HttpTests(Base):
         self.assertEqual(len(page['messages']), 4)
         status, msg, _ = self.req('GET', '/api/message?account=google:me@gmail.com&id=g0')
         self.assertNotIn('<script', msg['html'])
+
+    def test_inbox_feed_lists_unread_inbox_mail(self):
+        # The shell reads it same-origin with no custom header; owner only, read-only.
+        status, feed, r = self.req('GET', '/api/inbox', headers={'X-Wizard-Request': None})
+        self.assertEqual(status, 200)
+        self.assertEqual(feed['inbox'], 1)
+        searches = [c[2] for src in (self.g, self.m) for c in src.calls if c[:2] == ('POST', 'mail_search')]
+        self.assertTrue(searches and all(s['unread_only'] is True and s['folder'] == 'inbox' for s in searches))
+        self.assertFalse([c for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update'])  # never marks anything
+        keys = [i['key'] for i in feed['items']]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertTrue(keys and all(k.startswith('msg:') for k in keys))
+        first = feed['items'][0]
+        self.assertEqual(set(first), {'key', 'title', 'text', 'time', 'priority', 'open'})
+        self.assertEqual((first['title'], first['priority']), ('Anna', 3))
+        self.assertGreater(first['time'], 1700000000)
+        self.assertTrue(first['open'].startswith('#msg=google%3A'))
+        self.assertEqual([i['time'] for i in feed['items']], sorted((i['time'] for i in feed['items']), reverse=True))
+        self.assertFalse(feed['more'])
+        # Reading one in Mail drops it from the feed.
+        account, mid = first['key'][4:].rsplit(':', 1)
+        self.assertEqual(self.req('POST', '/api/update', {'account': account, 'id': mid, 'read': True})[0], 200)
+        after = self.req('GET', '/api/inbox')[1]
+        self.assertNotIn(first['key'], [i['key'] for i in after['items']])
+        self.assertEqual(len(after['items']), len(keys) - 1)
+        self.assertEqual(self.req('GET', '/api/inbox', owner=False)[0], 401)
+        self.assertEqual(self.req('GET', '/api/inbox', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
 
     def test_guards(self):
         self.assertEqual(self.req('GET', '/api/accounts', owner=False)[0], 401)
