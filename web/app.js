@@ -61,7 +61,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.2.0' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.2.1' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader',
@@ -493,7 +493,8 @@
   // ---------- badge and Wizard inbox links ----------
   // The badge counts the unread inbox mail the Wizard inbox feed lists (api/inbox, newest 50), so the icon and
   // Chats always show the same number. Items open here as #msg=<account>:<id>.
-  let unreadKeys = new Set(), badgeAt = 0;
+  // `more`: unread mail beyond the newest 50, so the badge reads "50+" instead of looking exact.
+  let unreadKeys = new Set(), badgeAt = 0, unreadMore = false;
   async function refreshBadge(force) {
     if (!force && Date.now() - badgeAt < 60_000) return;
     badgeAt = Date.now();
@@ -501,12 +502,12 @@
       const r = await fetch('api/inbox', { credentials: 'same-origin', cache: 'no-store' });
       const v = r.ok ? await r.json() : null;
       if (!v || !Array.isArray(v.items)) return;
-      unreadKeys = new Set(v.items.map(i => i.key));
-      if (window.WizardApp && WizardApp.badge) WizardApp.badge.set(v.items.length);
+      unreadKeys = new Set(v.items.map(i => i.key)); unreadMore = v.more === true;
+      if (window.WizardApp && WizardApp.badge) WizardApp.badge.set(v.items.length, { more: unreadMore });
     } catch (_) {}
   }
   function readOne(m) {
-    if (unreadKeys.delete(`msg:${m.account}:${m.id}`) && window.WizardApp && WizardApp.badge) WizardApp.badge.set(unreadKeys.size);
+    if (unreadKeys.delete(`msg:${m.account}:${m.id}`) && window.WizardApp && WizardApp.badge) WizardApp.badge.set(unreadKeys.size, { more: unreadMore });
   }
   function openFromLink() {
     const hit = /^#msg=([^:]+):(.+)$/.exec(location.hash || '');
