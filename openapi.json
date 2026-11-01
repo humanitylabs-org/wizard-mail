@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Wizard Mail",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Owner API behind the Mail page (owner login, same origin). Mail holds no sign-ins: it asks the Google and Microsoft apps (wizard.mail-calendar/1)."
  },
  "paths": {
@@ -39,6 +39,16 @@
      },
      "4XX": {
       "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/inbox": {
+   "get": {
+    "summary": "Wizard OS inbox feed v1: one item per unread email in the inboxes (newest 50; more = there is more unread mail). The app badge shows the same count. Read by the Wizard shell same-origin; owner only. open = #msg=<account>:<id>.",
+    "responses": {
+     "200": {
+      "description": "{inbox: 1, items: [{key, title, text, time, priority, open}], more}"
      }
     }
    }
