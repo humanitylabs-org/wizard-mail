@@ -19,9 +19,23 @@
 .wm-connect { overflow: auto; padding: var(--wz-space-5, 24px) var(--pad); display: grid; place-items: start center; }
 
 /* top bar, search, folders */
-.wm-top { display: flex; align-items: center; gap: var(--wz-space-2, 8px); padding: var(--pad) var(--pad) var(--wz-space-2, 8px); }
+.wm-top { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--wz-space-2, 8px);
+  padding: var(--pad) var(--pad) var(--wz-space-2, 8px); }
+.wm-top > .wm-scope { justify-self: start; grid-column: 1; grid-row: 1; }
+.wm-tools { grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: var(--wz-space-2, 8px); }
+/* Mark all as read (Miguel, 3 Nov 2026): right at the top, centred over the list. */
+.wm-markall { grid-column: 2; grid-row: 1; justify-self: center; white-space: nowrap; }
+.wm-markall[aria-busy="true"] { opacity: .7; cursor: progress; }
+/* Narrow list: not enough room beside the scope chip and the tools, so it takes its own centred line on top. */
+@container wmlist (max-width: 559px) {
+  .wm-top { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .wm-markall { grid-column: 1 / -1; }
+  .wm-top > .wm-scope { grid-row: 2; }
+  .wm-tools { grid-column: 2; grid-row: 2; }
+  .wm-top:has(.wm-markall[hidden]) > .wm-scope, .wm-top:has(.wm-markall[hidden]) > .wm-tools { grid-row: 1; }
+}
 .wm-grow { flex: 1; }
-.wm-scope { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wm-scope { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wm-icon { background: none; border: 0; color: var(--wz-text-secondary); padding: 6px; border-radius: var(--wz-radius-pill, 999px); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font: inherit; }
 .wm-icon:hover { background: color-mix(in srgb, var(--wz-text) 8%, transparent); color: var(--wz-text); }
 .wm-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -113,7 +127,7 @@
 .wm-toast { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
   display: flex; gap: var(--wz-space-3, 12px); align-items: center; padding: 10px 16px; border-radius: var(--wz-radius-pill, 999px); z-index: 20;
   background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 14%, var(--wz-base))); color: var(--wz-text); box-shadow: 0 6px 24px color-mix(in srgb, var(--wz-base) 50%, transparent);
-  transition: opacity var(--wz-motion-fast, .15s) var(--wz-ease, ease), transform var(--wz-motion-fast, .15s) var(--wz-ease, ease); max-width: calc(100% - 32px); }
+  transition: opacity var(--wz-motion-fast, .15s) var(--wz-ease, ease), transform var(--wz-motion-fast, .15s) var(--wz-ease, ease); max-width: calc(100% - 32px); width: max-content; }
 .wm-toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .wm-undo { background: none; border: 0; color: var(--wz-accent); font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
 html[data-presentation="immersive"] .wm-rbar, html[data-presentation="immersive"] .wm-top { padding-top: 46px; }

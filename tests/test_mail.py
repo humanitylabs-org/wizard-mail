@@ -341,11 +341,75 @@ class HttpTests(Base):
         self.assertEqual((status, u['id']), (200, 'm0M'))
         self.assertEqual(self.req('POST', '/api/update', {'account': 'microsoft:me@outlook.com', 'id': 'm0', 'archived': 'yes'})[0], 400)
 
+    def test_mark_all_read_marks_every_unread_message_at_the_source_and_undo(self):
+        self.req('GET', '/api/inbox')  # a snapshot exists, as in the app
+        status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'all', 'folder': 'inbox'})
+        self.assertEqual(status, 200, v)
+        self.assertEqual((v['count'], v['failed'], v['more'], v['errors']), (4, [], False, []))
+        self.assertEqual(sorted((c['account'], c['id']) for c in v['changed']),
+                         [('google:me@gmail.com', 'g0'), ('google:me@gmail.com', 'g0p2'), ('microsoft:me@outlook.com', 'm0'), ('microsoft:me@outlook.com', 'm0p2')])
+        updates = [c[2] for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update']
+        self.assertEqual(len(updates), 4)
+        self.assertTrue(all(u['read'] is True and set(u) == {'account', 'id', 'read'} for u in updates))  # never archives or trashes
+        searches = [c[2] for c in self.g.calls if c[1] == 'mail_search']
+        self.assertTrue(all(s['unread_only'] is True and s['folder'] == 'inbox' for s in searches))
+        self.assertIn('p2', [s.get('page_token') for s in searches])  # every page, not only the loaded rows
+        self.assertTrue(all(g == self.g.grant for g in self.g.grants_seen))  # the owner's tap carries Mail's grant
+        self.assertEqual(self.req('GET', '/api/inbox')[1]['items'], [])  # badge and Chats feed drop them at once
+        self.assertNotIn('old@hotmail.com', json.dumps(self.m.calls))  # accounts needing a sign-in are left alone
+        # Undo: the same messages unread again.
+        status, u, _ = self.req('POST', '/api/mark-read', {'items': v['changed'], 'read': False})
+        self.assertEqual((status, u['count'], u['read']), (200, 4, False))
+        undone = [c[2] for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update' and c[2]['read'] is False]
+        self.assertEqual(sorted(x['id'] for x in undone), ['g0', 'g0p2', 'm0', 'm0p2'])
+        # Nothing unread: a calm zero, nothing written.
+        for src in (self.g, self.m):
+            src.flags.update({k: {'read': True} for k in ('g0', 'g0p2', 'm0', 'm0p2')})
+        n = len([c for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update'])
+        status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'all', 'folder': 'inbox'})
+        self.assertEqual((status, v['count']), (200, 0))
+        self.assertEqual(len([c for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update']), n)
+
+    def test_mark_all_read_keeps_to_the_shown_scope_and_search(self):
+        status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'google:me@gmail.com', 'folder': 'archive', 'q': 'from:anna'})
+        self.assertEqual((status, v['count']), (200, 2))
+        self.assertFalse([c for c in self.m.calls if c[0] == 'POST'])
+        searches = [c[2] for c in self.g.calls if c[1] == 'mail_search']
+        self.assertTrue(all(s['folder'] == 'archive' and s['query'] == 'from:anna' for s in searches))
+        for bad in ({'account': 'yahoo:me@yahoo.com'}, {'folder': 'spam'}, {'q': 'x' * 301}):
+            self.assertEqual(self.req('POST', '/api/mark-all-read', bad)[0], 400)
+        for bad in ({'items': []}, {'items': 'g0'}, {'items': [{'account': 'google:me@gmail.com', 'id': 'bad id'}]},
+                    {'items': [{'account': 'google:me@gmail.com', 'id': 'g0'}], 'read': 'no'}, {'items': [{}] * 501}):
+            self.assertEqual(self.req('POST', '/api/mark-read', bad)[0], 400, bad)
+        self.assertEqual(self.req('POST', '/api/mark-all-read', {}, headers={'Origin': 'https://evil.example'})[0], 403)
+        self.assertEqual(self.req('POST', '/api/mark-all-read', {}, owner=False)[0], 401)
+
+    def test_mark_all_read_source_refusal_is_reported(self):
+        self.g.fail = (403, {'error': {'code': 'agent_access_denied', 'message': 'Read-only.'}})
+        status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'google:me@gmail.com'})
+        self.assertEqual((status, v['error']['code']), (403, 'owner_not_recognised'))
+        status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'all'})  # Microsoft still works
+        self.assertEqual((status, v['count'], v['errors'][0]['source']), (200, 2, 'google'))
+
+    def test_mcp_mark_all_read_is_an_agent_call(self):
+        call = lambda args: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'mail_mark_all_read', 'arguments': args}},
+                                     headers={'Host': f'127.0.0.1:{self.port}', 'X-Wizard-Agent': 'helper'}, owner=False)[1]['result']
+        done = call({'account': 'microsoft:me@outlook.com'})
+        self.assertFalse(done['isError'])
+        self.assertEqual(done['structuredContent']['count'], 2)
+        self.assertNotIn('changed', done['structuredContent'])
+        self.assertEqual({c[3] for c in self.m.calls if c[0] == 'POST'}, {'helper'})  # the source applies the agent level
+        self.assertEqual(set(self.m.grants_seen), {None})
+        self.m.fail = (403, {'error': {'code': 'agent_access_denied', 'message': 'Agents may only read.'}})
+        refused = call({'account': 'microsoft:me@outlook.com'})
+        self.assertTrue(refused['isError'])
+        self.assertEqual(refused['structuredContent']['error']['code'], 'agent_access_denied')
+
     def test_mcp_box_only_and_no_send(self):
         msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
         status, v, _ = self.req('POST', '/mcp', msg, headers={'Host': f'127.0.0.1:{self.port}'}, owner=False)
         names = {t['name'] for t in v['result']['tools']}
-        self.assertEqual(names, {'mail_accounts', 'mail_list', 'mail_read', 'mail_draft'})
+        self.assertEqual(names, {'mail_accounts', 'mail_list', 'mail_read', 'mail_draft', 'mail_mark_all_read'})
         self.assertEqual(self.req('POST', '/mcp', msg, owner=False)[0], 401)  # shell host, not box-local
         self.assertEqual(self.req('POST', '/mcp', msg, headers={'Host': f'127.0.0.1:{self.port}', 'Origin': 'https://x'}, owner=False)[0], 403)
         call = lambda name, args: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': name, 'arguments': args}},

@@ -9,9 +9,9 @@
   "categories": [
     "utilities"
   ],
-  "description": "A clean mail client for the Google and Microsoft accounts connected on this Wizard: unified inbox, search, safe reading (no scripts, remote pictures blocked until you allow them), write, reply, forward, archive and delete. Connect accounts from inside Mail through the Google and Microsoft apps (Quick connect through Composio, or your own app). Your agent can read and draft but not send.",
-  "tipi_version": 9,
-  "version": "0.2.1",
+  "description": "A clean mail client for the Google and Microsoft accounts connected on this Wizard: unified inbox, search, safe reading (no scripts, remote pictures blocked until you allow them), write, reply, forward, archive, delete, and Mark all as read in one tap. Connect accounts from inside Mail through the Google and Microsoft apps (Quick connect through Composio, or your own app). Your agent can read and draft but not send.",
+  "tipi_version": 10,
+  "version": "0.3.0",
   "source": "https://github.com/oscarhenrycollins/wizard-mail",
   "exposable": false,
   "supported_architectures": [
@@ -19,7 +19,7 @@
     "arm64"
   ],
   "created_at": 1793428942068,
-  "updated_at": 1793517329000,
+  "updated_at": 1793720242359,
   "dynamic_config": true,
   "min_tipi_version": "4.8.0",
   "uid": 1000,
