@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Wizard Mail",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Owner API behind the Mail page (owner login, same origin). Mail holds no sign-ins: it asks the Google and Microsoft apps (wizard.mail-calendar/1)."
  },
  "paths": {
@@ -355,6 +355,130 @@
     "responses": {
      "200": {
       "description": "JSON-RPC"
+     }
+    }
+   }
+  },
+  "/api/mark-all-read": {
+   "post": {
+    "summary": "Mark all as read: every unread message in an account scope and folder (optionally only search matches) is marked read at Gmail/Outlook, at most 500 per call.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "account": {
+          "type": "string",
+          "description": "Account key or \"all\" (default)."
+         },
+         "folder": {
+          "type": "string",
+          "enum": [
+           "inbox",
+           "sent",
+           "drafts",
+           "archive",
+           "trash",
+           "all"
+          ],
+          "description": "Default inbox."
+         },
+         "q": {
+          "type": "string",
+          "description": "Only messages matching this search."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{read: true, count, changed: [{account, id}], failed: [{account, id, code}], more, errors}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
+  "/api/mark-read": {
+   "post": {
+    "summary": "Mark given messages read or unread (Undo for Mark all as read).",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "items"
+        ],
+        "properties": {
+         "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+           "type": "object",
+           "required": [
+            "account",
+            "id"
+           ],
+           "properties": {
+            "account": {
+             "type": "string"
+            },
+            "id": {
+             "type": "string"
+            }
+           }
+          }
+         },
+         "read": {
+          "type": "boolean",
+          "description": "Default true; false = unread again."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{read, count, changed, failed}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
      }
     }
    }

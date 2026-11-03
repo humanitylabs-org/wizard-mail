@@ -6,6 +6,7 @@
   const $ = (s, root = document) => root.querySelector(s);
   const root = $('.wm');
   const listEl = $('.wm-list'), reader = $('.wm-reader'), toast = $('.wm-toast');
+  const MARKABLE = new Set(['inbox', 'archive']);
   const FOLDERS = [['inbox', 'Inbox'], ['sent', 'Sent'], ['drafts', 'Drafts'], ['archive', 'Archive'], ['trash', 'Trash']];
   const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null };
 
@@ -61,7 +62,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.2.1' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.0' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader',
@@ -145,6 +146,8 @@
     folders.replaceChildren(...FOLDERS.map(([id, label]) => button(label, () => pickFolder(id), 'wm-navitem' + (state.folder === id ? ' on' : ''))));
     $('.wm-folders').replaceChildren(...FOLDERS.map(([id, label]) => button(label, () => pickFolder(id), 'wz-chip wm-fchip', { role: 'tab', 'aria-selected': String(state.folder === id) })));
     $('.wm-scope').textContent = accountName(state.scope) + (accounts.length > 1 ? ' ▾' : '');
+    // Mark all as read: for mail that arrives (Inbox, Archive); Sent, Drafts and Trash have nothing to review.
+    $('.wm-markall').hidden = !accounts.length || !MARKABLE.has(state.folder);
   }
   function pickScope(key) { state.scope = key; closeSheet(); renderSide(); load(true); }
   function pickFolder(id) { state.folder = id; renderSide(); load(true); }
@@ -366,6 +369,54 @@
     catch (e) { say(e.message); }
   }
 
+  // Mark all as read (top centre): every unread message in what the list shows (account scope, folder, search) is
+  // marked read at Gmail / Outlook, not only the loaded rows. One tap, no question; Undo in the toast.
+  let marking = false;
+  async function markAll() {
+    if (marking) return;
+    const btn = $('.wm-markall');
+    const scope = { account: state.scope, folder: state.folder, q: state.q };
+    const before = state.messages.filter(m => m.unread);
+    marking = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Marking…';
+    for (const m of before) m.unread = false;
+    renderList();
+    try {
+      const v = await api('api/mark-all-read', scope);
+      const n = v.count || 0;
+      const left = (v.failed || []).length;
+      const changed = v.changed || [];
+      if (!n && !left) say('Nothing unread here.');
+      else {
+        let text = n === 1 ? 'Marked 1 as read' : `Marked ${n} as read`;
+        if (left) text += ` · ${left} did not change`;
+        if (v.more) text += ' · tap again for the rest';
+        say(text, changed.length ? () => undoMarkAll(changed) : null);
+      }
+      if (v.errors && v.errors.length) setTimeout(() => say(v.errors[0].message), 6200);
+      refreshBadge(true);
+    } catch (e) {
+      for (const m of before) m.unread = true;
+      renderList();
+      say(e.message);
+    } finally {
+      marking = false;
+      btn.removeAttribute('aria-busy');
+      btn.textContent = 'Mark all as read';
+    }
+  }
+  async function undoMarkAll(changed) {
+    try {
+      await api('api/mark-read', { items: changed, read: false });
+      const keys = new Set(changed.map(c => `${c.account}|${c.id}`));
+      for (const m of state.messages) if (keys.has(`${m.account}|${m.id}`)) m.unread = true;
+      renderList();
+      say(changed.length === 1 ? '1 is unread again' : `${changed.length} are unread again`);
+      refreshBadge(true);
+    } catch (e) { say(e.message); }
+  }
+
   // ---------- compose ----------
   const EMAIL = /^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$/;
   function parseAddresses(text) {
@@ -481,6 +532,7 @@
     else if (name === 'scope') scopeSheet();
     else if (name === 'refresh') { loadAccounts().then(ok => ok && load(true)).catch(err => say(err.message)); }
     else if (name === 'more') load(false);
+    else if (name === 'markall') markAll();
   });
   $('.wm-search').addEventListener('submit', e => { e.preventDefault(); state.q = e.target.q.value.trim(); load(true); });
   $('.wm-search input').addEventListener('search', e => { if (!e.target.value && state.q) { state.q = ''; load(true); } });

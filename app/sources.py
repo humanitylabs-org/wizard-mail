@@ -25,6 +25,8 @@ LIST_TTL = 45
 INBOX_MAX = 50   # the Wizard inbox feed / badge list the newest unread mail, at most this many
 INBOX_TTL = 60
 MAX_PAGE = 20
+MARK_MAX = 500   # Mark all as read changes at most this many messages per tap (more: tap again)
+ID = re.compile(r'[A-Za-z0-9=_\-+/.]{1,512}')
 EMAIL = re.compile(r'^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$')
 
 
@@ -389,6 +391,116 @@ class Mailbox:
         self._changed()
         self._unread_changed(key, message_id, flags)
         return value
+
+    def _unread_ids(self, key, folder, query, caller, cap):
+        """Every unread message in a scope (one account or all), as [(source, email, id)], at most cap, plus `more`."""
+        if folder not in FOLDERS:
+            raise MailError(400, 'invalid_folder', 'Unknown folder.')
+        if not isinstance(query, str) or len(query) > 300:
+            raise MailError(400, 'invalid_query', 'Search is too long.')
+        targets = self._targets(key, caller)
+
+        def walk(target):
+            source, email = target
+            found, seen, token = [], set(), None
+            while True:
+                args = {'account': email, 'folder': folder, 'unread_only': True, 'max': 25}
+                if query:
+                    args['query'] = query
+                if token:
+                    args['page_token'] = token
+                try:
+                    value = source.tool('mail_search', args, caller)
+                except MailError as error:
+                    return target, found, bool(found), error
+                for m in value.get('messages') or []:
+                    if isinstance(m, dict) and isinstance(m.get('id'), str) and m.get('unread', True) and m['id'] not in seen and ID.fullmatch(m['id']):
+                        seen.add(m['id'])
+                        found.append(m['id'])
+                token = value.get('next_page_token')
+                if not token:
+                    return target, found, False, None
+                if len(found) >= cap:
+                    return target, found, True, None
+
+        out, more, errors = [], False, []
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(targets)))) as pool:
+            for (source, email), ids, extra, error in pool.map(walk, targets):
+                if error:
+                    errors.append(error)
+                out += [(source, email, mid) for mid in ids]
+                more = more or extra
+        if errors and len(errors) == len(targets) and not out:
+            raise errors[0]
+        if len(out) > cap:
+            out, more = out[:cap], True
+        return out, more, errors
+
+    def set_read(self, items, read=True, caller=None):
+        """Mark these messages read (or unread, for Undo) at the provider, side by side. items: [{account, id}].
+        Returns the ones that changed and the ones that did not (with the provider's reason)."""
+        if not isinstance(items, list) or not 1 <= len(items) <= MARK_MAX:
+            raise MailError(400, 'invalid_arguments', f'Pass 1 to {MARK_MAX} messages.')
+        if not isinstance(read, bool):
+            raise MailError(400, 'invalid_arguments', 'read must be true or false.')
+        work = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise MailError(400, 'invalid_arguments', 'Each message needs an account and an id.')
+            source, email = self._resolve(item.get('account'))
+            mid = item.get('id')
+            if not isinstance(mid, str) or not ID.fullmatch(mid):
+                raise MailError(400, 'invalid_id', 'Unknown message.')
+            work.append((source, email, mid))
+        return self._apply_read(work, read, caller)
+
+    def _apply_read(self, work, read, caller):
+        def one(entry):
+            source, email, mid = entry
+            try:
+                value = source.tool('mail_update', {'account': email, 'id': mid, 'read': read}, caller)
+                return entry, value, None
+            except MailError as error:
+                return entry, None, error
+
+        done, failed, first = [], [], None
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for (source, email, mid), value, error in pool.map(one, work):
+                key = f'{source.id}:{email}'
+                if error:
+                    failed.append({'account': key, 'id': mid, 'code': error.code})
+                    first = first or error
+                else:
+                    done.append({'account': key, 'id': str((value or {}).get('id') or mid)})
+        if done:
+            self._changed()
+            self._unread_bulk({(d['account'], d['id']) for d in done}, read)
+        if work and not done and first:
+            raise first
+        return {'read': read, 'changed': done, 'count': len(done), 'failed': failed}
+
+    def mark_all_read(self, key='all', folder='inbox', query='', caller=None, cap=MARK_MAX):
+        """Mark every unread message in this scope read at the provider (Gmail / Outlook): one account or all of
+        them, one folder, optionally only search matches. Undo = set_read(changed, False)."""
+        work, more, errors = self._unread_ids(key or 'all', folder or 'inbox', query or '', caller, cap)
+        if not work:
+            result = {'read': True, 'changed': [], 'count': 0, 'failed': []}
+        else:
+            result = self._apply_read(work, True, caller)
+        result['more'] = more
+        result['errors'] = [{'source': e.extra.get('source'), **e.as_dict()} for e in errors]
+        return result
+
+    def _unread_bulk(self, keys, read):
+        with self.lock:
+            self.unread_gen += 1
+            snap = self.unread_snap
+            if not snap:
+                return
+            if read:
+                self.unread_snap = (snap[0], [m for m in snap[1] if (m['account'], m['id']) not in keys], snap[2])
+            else:
+                self.unread_dirty = True
 
     def draft(self, key, fields, caller=None):
         source, email = self._resolve(key)

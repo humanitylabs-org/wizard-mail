@@ -9,3 +9,6 @@ One inbox for the Google and Microsoft accounts connected on a Wizard. See `wiza
 - After any source edit: `python3 tools/package.py` (the Runtipi recipe inlines the source).
 
 Badge and Wizard inbox: Mail's icon shows how many unread emails wait in your inboxes (the newest 50 at most), and `GET /wizard-mail/api/inbox` lists those same emails so Wizard can show them as a badge or as items in Chats. Opening an item opens that email in Mail; reading it removes it.
+
+
+Mark all as read: the button centred at the top of the list (`POST /api/mark-all-read {account, folder, q}`, Undo = `POST /api/mark-read {items, read: false}`; MCP `mail_mark_all_read`) marks every unread message in the shown scope read at the provider through the source apps' `mail_update`, side by side, at most 500 per tap.

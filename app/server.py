@@ -23,7 +23,7 @@ from sources import MailError, OWNER  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.2.1'
+VERSION = '0.3.0'
 ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
@@ -113,6 +113,13 @@ TOOLS = [
      'inputSchema': {'type': 'object', 'required': ['account', 'body'], 'properties': {
          'account': {'type': 'string'}, 'to': {'type': 'array', 'items': {'type': 'string'}}, 'cc': {'type': 'array', 'items': {'type': 'string'}},
          'subject': {'type': 'string'}, 'body': {'type': 'string'}, 'reply_to_id': {'type': 'string'}}}},
+    {'name': 'mail_mark_all_read', 'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+     'description': 'Mark every unread message read in one folder (default inbox) of one account or all accounts, at Gmail/Outlook. '
+                    f'At most {sources_mod.MARK_MAX} per call (more: true = call again). Only when the owner asks; it changes his mailbox.',
+     'inputSchema': {'type': 'object', 'properties': {
+         'account': {'type': 'string', 'description': 'Account key from mail_accounts; default all accounts.'},
+         'folder': {'type': 'string', 'enum': list(sources_mod.FOLDERS), 'description': 'Default inbox.'},
+         'query': {'type': 'string', 'description': 'Only messages matching this search.'}}}},
 ]
 
 
@@ -148,6 +155,9 @@ def rpc(app, message, caller=None):
         elif name == 'mail_draft':
             value = box.draft(args.get('account'), args, caller)
             value['next'] = 'Saved in Drafts, not sent. Tell the owner it is waiting in Mail.'
+        elif name == 'mail_mark_all_read':
+            value = box.mark_all_read(args.get('account') or 'all', args.get('folder') or 'inbox', args.get('query') or '', caller)
+            value.pop('changed', None)  # ids are noise for the agent; the count is the answer
         else:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': -32602, 'message': 'Unknown tool'}}
         return {'jsonrpc': '2.0', 'id': rid, 'result': {'content': [{'type': 'text', 'text': json.dumps(value)}], 'structuredContent': value, 'isError': False}}
@@ -319,6 +329,13 @@ def handler_for(app):
                 box = app.mailbox
                 if path == '/api/update':
                     return self.send_json(200, box.update(body.get('account'), body.get('id'), body, OWNER))
+                if path == '/api/mark-all-read':
+                    # The top "Mark all as read" button: the list's account scope, folder and search.
+                    return self.send_json(200, box.mark_all_read(body.get('account') or 'all', body.get('folder') or 'inbox',
+                                                                 body.get('q') or '', OWNER))
+                if path == '/api/mark-read':
+                    # Undo for Mark all as read (read: false), or marking a given set read.
+                    return self.send_json(200, box.set_read(body.get('items'), body.get('read', True), OWNER))
                 if path == '/api/draft':
                     return self.send_json(200, box.draft(body.get('account'), body, OWNER))
                 if path == '/api/send':
