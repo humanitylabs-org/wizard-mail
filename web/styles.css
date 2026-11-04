@@ -315,7 +315,7 @@ html[data-presentation="immersive"] .wm-bbar, html[data-presentation="immersive"
 /* thumb-sized targets on touch screens */
 @media (pointer: coarse) {
   .wm-icon { min-width: 44px; min-height: 44px; justify-content: center; }
-  .wz-chip.wm-fchip, .wz-chip.wm-unreadf, .wz-chip.wm-scope, .wm-ractions .wz-chip, .wz-button.wm-markall, .wm-rbar .wz-button, .wz-button.wm-more, .wm-banner .wz-button { min-height: 44px; }
+  .wz-chip.wm-fchip, .wz-chip.wm-unreadf, .wz-chip.wm-scope, .wm-ractions .wz-chip, .wz-button.wm-markall, .wm-rbar .wz-button, .wz-button.wm-more, .wm-banner .wz-button, .wm-imgnote .wz-button { min-height: 44px; }
   .wm-narrow .wm-rbar .wz-button { min-height: 44px; }
   .wm-item { min-height: 52px; }
 }
