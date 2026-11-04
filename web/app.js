@@ -9,7 +9,15 @@
   const MARKABLE = new Set(['inbox', 'archive']);
   const UNREADABLE = new Set(['inbox']);
   const FOLDERS = [['inbox', 'Inbox'], ['sent', 'Sent'], ['drafts', 'Drafts'], ['archive', 'Archive'], ['trash', 'Trash']];
-  const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', unread: false, messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null };
+  const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', unread: false, messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null, shown: '', finding: false };
+  // Fixed icons (constant markup, never mail text).
+  const ICON = {
+    reply: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 8L4 13l6 5M4 13h10a6 6 0 0 1 6 6"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg>',
+    archive: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v4H4zM5.5 9v10h13V9M10 13h4"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4.5h4V7M6.5 7l1 13h9l1-13"/></svg>',
+    inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13l2.5-8h11L20 13v6H4zM4 13h5l1 2h4l1-2h5"/></svg>',
+  };
 
   // ---------- small helpers ----------
   function el(tag, text, cls, attrs) {
@@ -49,6 +57,8 @@
   function mailAccounts() { return state.accounts ? state.accounts.sources.flatMap(s => s.accounts).filter(a => a.mail && a.status === 'active') : []; }
   function accountName(key) { const a = mailAccounts().find(x => x.key === key); return a ? (a.label || a.email) : 'All inboxes'; }
   function narrow() { return root.clientWidth < 720; }
+  // Phone-sized window: thumb bars at the bottom and the newest mail at the bottom of the list.
+  function phoneSize() { return root.clientWidth < 600; }
   function setView(v) { state.view = v; root.dataset.view = v; }
   // Compact list (Miguel's default): sender, subject, time and the unread dot; Settings brings previews back.
   // Kept on this device only.
@@ -63,11 +73,15 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.2' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.0' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
-      canGoBack: () => state.view === 'reader',
-      back: () => { if (state.view !== 'reader') return false; closeReader(); return true; },
+      canGoBack: () => state.view === 'reader' || state.finding,
+      back: () => {
+        if (state.view === 'reader') { closeReader(); return true; }
+        if (state.finding) { unfind(); return true; }
+        return false;
+      },
     });
   }
 
@@ -147,11 +161,21 @@
     // Unread sits under Inbox: in the side list as Inbox's own sub-item, in the chip layout as a chip under the Inbox chip.
     folders.replaceChildren(...FOLDERS.flatMap(([id, label]) => {
       const on = state.folder === id && !(id === 'inbox' && state.unread);
-      const b = button(label, () => pickFolder(id, false), 'wm-navitem' + (on ? ' on' : ''));
+      const b = button('', () => pickFolder(id, false), 'wm-navitem' + (on ? ' on' : ''), { 'data-folder': id });
+      b.append(el('span', label, 'wm-grow'));
       if (id !== 'inbox') return [b];
-      return [b, button('Unread', () => pickFolder('inbox', true), 'wm-navitem wm-navsub' + (state.folder === 'inbox' && state.unread ? ' on' : ''))];
+      b.append(el('span', '', 'wm-count'));
+      const sub = button('', () => pickFolder('inbox', true), 'wm-navitem wm-navsub' + (state.folder === 'inbox' && state.unread ? ' on' : ''));
+      sub.append(el('span', 'Unread', 'wm-grow'), el('span', '', 'wm-count'));
+      return [b, sub];
     }));
-    $('.wm-folders').replaceChildren(...FOLDERS.map(([id, label]) => button(label, () => pickFolder(id), 'wz-chip wm-fchip', { role: 'tab', 'aria-selected': String(state.folder === id) })));
+    $('.wm-folders').replaceChildren(...FOLDERS.map(([id, label]) => {
+      const c = button(label, () => pickFolder(id), 'wz-chip wm-fchip', { role: 'tab', 'aria-selected': String(state.folder === id), 'data-folder': id });
+      if (id === 'inbox') c.append(el('span', '', 'wm-count'));
+      return c;
+    }));
+    if (!$('.wm-unreadf .wm-count')) $('.wm-unreadf').append(el('span', '', 'wm-count'));
+    showCounts();
     $('.wm-scope').textContent = accountName(state.scope) + (accounts.length > 1 ? ' ▾' : '');
     // Mark all as read: for mail that arrives (Inbox, Archive); Sent, Drafts and Trash have nothing to review.
     $('.wm-markall').hidden = !accounts.length || !MARKABLE.has(state.folder);
@@ -159,6 +183,22 @@
     const uf = $('.wm-unreadf');
     $('.wm-filter').hidden = !UNREADABLE.has(state.folder);
     uf.setAttribute('aria-pressed', String(state.unread));
+  }
+  // Unread count on Inbox (chip and side item) and the Unread chip, from the same list the app badge counts
+  // (newest 50 unread inbox mail; '50+' when there is more). Follows the account picked at the top.
+  function unreadCount() {
+    let n = 0;
+    if (state.scope === 'all') n = unreadKeys.size;
+    else { const pre = `msg:${state.scope}:`; for (const k of unreadKeys) if (k.startsWith(pre)) n++; }
+    if (!n) return '';
+    return unreadMore ? `${n}+` : String(n);
+  }
+  function showCounts() {
+    const text = unreadCount();
+    for (const c of document.querySelectorAll('.wm-count')) { c.textContent = text; c.hidden = !text; }
+    const label = text ? `, ${text} unread` : '';
+    for (const b of document.querySelectorAll('[data-folder="inbox"]')) b.setAttribute('aria-label', 'Inbox' + label);
+    $('.wm-unreadf').setAttribute('aria-label', 'Unread' + (text ? `, ${text}` : ''));
   }
   function unreadOnly() { return state.unread && UNREADABLE.has(state.folder); }
   function toggleUnread() { state.unread = !state.unread; renderSide(); load(true); }
@@ -186,10 +226,19 @@
   }
 
   // ---------- list ----------
-  async function load(fresh) {
+  function listKey() { return [state.scope, state.folder, state.q, unreadOnly() ? 'u' : ''].join('|'); }
+  // load(true): first page. A refresh of the same list keeps the rows on screen (and, on a phone, the place he is
+  // reading) until the new page arrives; a new folder/account/search starts at the newest mail.
+  async function load(fresh, opts = {}) {
     if (!mailAccounts().length) return;
     const mine = ++state.loading;
-    if (fresh) { state.cursor = null; listEl.replaceChildren(el('div', 'Loading…', 'wm-loading')); }
+    const same = fresh && state.shown === listKey() && state.messages.length && listEl.querySelector('.wm-item');
+    let place = fresh ? 'keep' : 'older';
+    if (fresh) {
+      state.cursor = null;
+      if (!same) { place = 'newest'; listEl.replaceChildren(el('div', 'Loading…', 'wm-loading')); }
+      else if (opts.toNewest) place = 'newest';
+    }
     const qs = new URLSearchParams({ account: state.scope, folder: state.folder });
     if (state.q) qs.set('q', state.q);
     if (unreadOnly()) qs.set('unread', '1');
@@ -200,7 +249,8 @@
       state.messages = fresh ? v.messages : state.messages.concat(v.messages);
       state.cursor = v.cursor;
       state.lastLoad = Date.now();
-      renderList();
+      state.shown = listKey();
+      renderList(place);
       if (v.errors && v.errors.length) say(`${v.errors[0].email}: ${v.errors[0].message}`);
     } catch (e) {
       if (mine !== state.loading) return;
@@ -208,8 +258,28 @@
       listEl.firstChild.append(el('strong', 'Mail did not load'), el('p', e.message), button('Try again', () => load(true), 'wz-button secondary'));
     }
   }
-  function renderList() {
-    $('.wm-more').hidden = !state.cursor;
+  // Phone (narrow window): newest at the bottom, like a chat; opens at the newest, Load more sits on top, and new
+  // mail never moves what he is reading while scrolled up. Wide windows stay newest-first from the top.
+  let stick = true, phoneOrder = null;
+  function nearEnd() { return listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 8; }
+  listEl.addEventListener('scroll', () => { if (phoneOrder) stick = nearEnd(); }, { passive: true });
+  function toNewest() { if (phoneOrder) { listEl.scrollTop = listEl.scrollHeight; stick = true; } else listEl.scrollTop = 0; }
+  function anchorRow() {
+    // the lowest row he can see, and where it sits, so a re-render can put it back
+    const box = listEl.getBoundingClientRect();
+    let best = null;
+    for (const n of listEl.querySelectorAll('.wm-item')) {
+      const r = n.getBoundingClientRect();
+      if (r.top < box.bottom && r.bottom > box.top) best = { id: n.dataset.id, off: r.top - box.top };
+    }
+    return best;
+  }
+  function renderList(place = 'keep') {
+    const phone = phoneSize();
+    const flipped = phoneOrder !== null && phoneOrder !== phone;
+    const anchor = phone && phoneOrder && ((!stick && place === 'keep') || place === 'older') ? anchorRow() : null;
+    phoneOrder = phone;
+    $('.wm-more').hidden = phone || !state.cursor;
     if (!state.messages.length) {
       const empty = el('div', null, 'wz-empty');
       if (unreadOnly() && !state.q) empty.append(el('strong', 'No unread mail'), el('p', 'You have read everything here.'));
@@ -218,8 +288,24 @@
       return;
     }
     const many = mailAccounts().length > 1 && state.scope === 'all';
-    listEl.replaceChildren(...state.messages.map(m => item(m, many)));
+    const rows = state.messages.map(m => item(m, many));
+    if (!phone) {
+      listEl.replaceChildren(...rows);
+      if (place === 'newest' || flipped) listEl.scrollTop = 0;
+      return;
+    }
+    rows.reverse();
+    if (state.cursor) rows.unshift(button('Load more', () => load(false), 'wz-button secondary wm-more wm-more-top'));
+    listEl.replaceChildren(...rows);
+    if (anchor) {
+      const n = listEl.querySelector(`.wm-item[data-id="${CSS.escape(anchor.id)}"]`);
+      if (n) { listEl.scrollTop += (n.getBoundingClientRect().top - listEl.getBoundingClientRect().top) - anchor.off; stick = nearEnd(); return; }
+    }
+    if (place === 'older') return;
+    if (place === 'newest' || stick || flipped) toNewest();
   }
+  // Keep the newest mail in view on a phone when the list's height changes (bars, keyboard, window size).
+  new ResizeObserver(() => { if (phoneOrder && stick) listEl.scrollTop = listEl.scrollHeight; }).observe(listEl);
   function item(m, many) {
     const sent = state.folder === 'sent' || state.folder === 'drafts';
     const name = sent ? (m.to && m.to.length ? 'To ' + m.to.map(who).join(', ') : '(no recipient)') : (who(m.from) || '(unknown sender)');
@@ -286,17 +372,35 @@
     bar.append(el('span', null, 'wm-grow'));
     const x = button('', closeReader, 'wm-icon wm-close', { 'aria-label': 'Close', title: 'Close (Esc)' });
     x.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    // Phone: Reply, Archive and Delete also sit in a bottom bar under his thumb; the copies above hide there.
+    const thumb = el('div', null, 'wm-rbb');
+    const cell = (label, icon, fn) => { const c = button('', fn, 'wm-bcell'); c.innerHTML = icon; c.append(el('span', label)); thumb.append(c); };
     if (state.folder === 'drafts') {
-      bar.append(button('Edit and send', () => compose({ mode: 'draft', from: m.account, msg }), 'wz-button'));
+      const edit = () => compose({ mode: 'draft', from: m.account, msg });
+      bar.append(button('Edit and send', edit, 'wz-button wm-dup'));
+      cell('Edit and send', ICON.edit, edit);
     } else {
-      bar.append(button('Reply', () => compose({ mode: 'reply', from: m.account, msg }), 'wz-button'),
+      const reply = () => compose({ mode: 'reply', from: m.account, msg });
+      bar.append(button('Reply', reply, 'wz-button wm-dup'),
         button('Reply all', () => compose({ mode: 'all', from: m.account, msg }), 'wz-button secondary'),
         button('Forward', () => compose({ mode: 'forward', from: m.account, msg }), 'wz-button secondary'));
+      cell('Reply', ICON.reply, reply);
     }
     const more = el('div', null, 'wm-ractions');
-    if (state.folder !== 'archive' && state.folder !== 'trash' && state.folder !== 'drafts' && state.folder !== 'sent') more.append(button('Archive', () => change(m, { archived: true }, 'Archived', { archived: false }), 'wz-chip'));
-    if (state.folder === 'trash') more.append(button('Move to Inbox', () => change(m, { trashed: false }, 'Moved to Inbox', { trashed: true }), 'wz-chip'));
-    else more.append(button('Delete', () => change(m, { trashed: true }, 'Moved to Trash', { trashed: false }), 'wz-chip'));
+    if (canArchive()) {
+      const archive = () => archiveIt(m);
+      more.append(button('Archive', archive, 'wz-chip wm-dup'));
+      cell('Archive', ICON.archive, archive);
+    }
+    if (state.folder === 'trash') {
+      const back = () => change(m, { trashed: false }, 'Moved to Inbox', { trashed: true });
+      more.append(button('Move to Inbox', back, 'wz-chip wm-dup'));
+      cell('To Inbox', ICON.inbox, back);
+    } else {
+      const del = () => change(m, { trashed: true }, 'Moved to Trash', { trashed: false });
+      more.append(button('Delete', del, 'wz-chip wm-dup'));
+      cell('Delete', ICON.trash, del);
+    }
     if (state.folder !== 'drafts') more.append(button('Mark unread', () => markUnread(m), 'wz-chip'));
     const head = el('header', null, 'wm-rhead');
     head.append(el('h2', msg.subject || '(no subject)', 'wm-rsubj'));
@@ -327,7 +431,7 @@
       body.append(att);
     }
     bar.append(x);
-    reader.replaceChildren(bar, head, body);
+    reader.replaceChildren(bar, head, body, thumb);
     reader.scrollTop = 0;
   }
   function htmlFrame(html, images) {
@@ -357,7 +461,7 @@
     const at = state.messages.indexOf(m);
     state.messages = state.messages.filter(x => x !== m);
     renderList();
-    closeReader();
+    if (state.open && state.open.id === m.id) closeReader();
     try {
       const out = await api('api/update', { account: m.account, id: m.id, ...flags });
       const id = out.id || m.id;
@@ -376,12 +480,31 @@
       say(e.message);
     }
   }
+  function canArchive() { return !['archive', 'trash', 'drafts', 'sent'].includes(state.folder); }
+  function archiveIt(m) { return change(m, { archived: true }, 'Archived', { archived: false }); }
   async function markUnread(m) {
     m.unread = true;
     renderList();
     closeReader();
+    unreadLocal(m, true);
     try { await api('api/update', { account: m.account, id: m.id, read: false }); say('Marked unread'); refreshBadge(true); }
     catch (e) { say(e.message); }
+  }
+  // Swipe right on a row: read <-> unread, with Undo.
+  async function toggleRead(m, undoing) {
+    const read = m.unread;
+    const set = unread => {
+      m.unread = unread;
+      const row = listEl.querySelector(`.wm-item[data-id="${CSS.escape(m.id)}"]`);
+      if (row) row.replaceWith(item(m, mailAccounts().length > 1 && state.scope === 'all'));
+      unreadLocal(m, unread);
+    };
+    set(!read);
+    try {
+      await api('api/update', { account: m.account, id: m.id, read });
+      if (!undoing) say(read ? 'Marked read' : 'Marked unread', () => toggleRead(m, true));
+      refreshBadge(true);
+    } catch (e) { set(read); say(e.message); }
   }
 
   // Mark all as read (top centre): every unread message in what the list shows (account scope, folder, search) is
@@ -395,7 +518,7 @@
     marking = true;
     btn.setAttribute('aria-busy', 'true');
     btn.textContent = 'Marking…';
-    for (const m of before) m.unread = false;
+    for (const m of before) { m.unread = false; unreadLocal(m, false); }
     renderList();
     try {
       const v = await api('api/mark-all-read', scope);
@@ -536,6 +659,108 @@
     if (to.length) { bodyIn.setSelectionRange(0, 0); }
   }
 
+  // ---------- touch: swipe a row, pull the list down ----------
+  // Swipe left = Archive (where Archive exists), swipe right = read/unread; both offer Undo. Reader buttons stay the
+  // visible way to do the same. Touch only: a mouse keeps plain clicks and text selection.
+  const SWIPE_AT = 72;
+  let swipe = null, swallowClick = false;
+  listEl.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    const row = e.target.closest('.wm-item');
+    if (!row) return;
+    swipe = { row, id: row.dataset.id, x: e.clientX, y: e.clientY, dx: 0, on: false, pid: e.pointerId };
+  });
+  listEl.addEventListener('pointermove', e => {
+    if (!swipe || e.pointerId !== swipe.pid) return;
+    const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+    if (!swipe.on) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; }
+      if (Math.abs(dx) < 12) return;
+      swipe.on = true;
+      try { swipe.row.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    const m = state.messages.find(x => x.id === swipe.id);
+    if (!m) return;
+    let d = dx;
+    if (d < 0 && !canArchive()) d = 0;
+    if (d > 0 && state.folder === 'drafts') d = 0;
+    swipe.dx = d;
+    const row = swipe.row;
+    row.classList.add('wm-swiping');
+    row.style.transform = `translateX(${d}px)`;
+    row.dataset.swipe = d < 0 ? 'archive' : d > 0 ? (m.unread ? 'read' : 'unread') : '';
+    row.dataset.swipeLabel = d < 0 ? 'Archive' : m.unread ? 'Read' : 'Unread';
+    row.classList.toggle('wm-armed', Math.abs(d) >= SWIPE_AT);
+  });
+  const endSwipe = cancel => {
+    if (!swipe) return;
+    const { row, id, dx, on } = swipe;
+    swipe = null;
+    if (!on) return;
+    swallowClick = true;
+    setTimeout(() => { swallowClick = false; }, 350);
+    row.classList.remove('wm-swiping', 'wm-armed');
+    row.style.transform = '';
+    delete row.dataset.swipe;
+    const m = state.messages.find(x => x.id === id);
+    if (cancel || !m || Math.abs(dx) < SWIPE_AT) return;
+    if (dx < 0) archiveIt(m); else toggleRead(m);
+  };
+  listEl.addEventListener('pointerup', () => endSwipe(false));
+  listEl.addEventListener('pointercancel', () => endSwipe(true));
+  listEl.addEventListener('click', e => { if (swallowClick) { e.stopPropagation(); e.preventDefault(); swallowClick = false; } }, true);
+
+  // Pull the list down from its top to refresh (touch).
+  const pull = $('.wm-pull');
+  const PULL_AT = 64;
+  let pullY = null, pulled = 0;
+  listEl.addEventListener('touchstart', e => { pullY = listEl.scrollTop <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null; pulled = 0; }, { passive: true });
+  listEl.addEventListener('touchmove', e => {
+    if (pullY === null || swipe && swipe.on) return;
+    const d = e.touches[0].clientY - pullY;
+    if (d <= 0 || listEl.scrollTop > 0) { pulled = 0; pull.style.height = ''; return; }
+    pulled = Math.min(96, d * 0.5);
+    pull.style.height = pulled + 'px';
+    pull.classList.toggle('wm-armed', pulled >= PULL_AT);
+    pull.style.setProperty('--turn', `${Math.round(pulled * 4)}deg`);
+  }, { passive: true });
+  listEl.addEventListener('touchend', () => {
+    if (pullY === null) return;
+    pullY = null;
+    if (pulled >= PULL_AT) refresh(true);
+    pulled = 0;
+    pull.style.height = '';
+    pull.classList.remove('wm-armed');
+  });
+
+  function refresh(touch) {
+    const btns = document.querySelectorAll('[data-act="refresh"]');
+    btns.forEach(b => b.setAttribute('aria-busy', 'true'));
+    if (touch) pull.classList.add('wm-busy');
+    return loadAccounts().then(ok => ok && load(true, { toNewest: true })).catch(err => say(err.message))
+      .finally(() => { btns.forEach(b => b.removeAttribute('aria-busy')); pull.classList.remove('wm-busy'); });
+  }
+
+  // Phone search: the bottom bar turns into the search field; ✕ or Back closes it and shows all mail again.
+  const bbar = $('.wm-bbar'), bsearch = $('.wm-bsearch');
+  function find() {
+    state.finding = true;
+    bbar.classList.add('wm-finding');
+    bsearch.hidden = false;
+    bsearch.q.value = state.q;
+    bsearch.q.focus();
+  }
+  function unfind() {
+    state.finding = false;
+    bbar.classList.remove('wm-finding');
+    bsearch.hidden = true;
+    bsearch.q.blur();
+    $('.wm-search input').value = '';
+    if (state.q) { state.q = ''; load(true); }
+  }
+  bsearch.addEventListener('submit', e => { e.preventDefault(); state.q = bsearch.q.value.trim(); $('.wm-search input').value = state.q; bsearch.q.blur(); load(true); });
+  bsearch.q.addEventListener('search', () => { if (!bsearch.q.value && state.q) { state.q = ''; load(true); } });
+
   // ---------- wiring ----------
   document.addEventListener('click', e => {
     const act = e.target.closest('[data-act]');
@@ -545,18 +770,25 @@
     else if (name === 'add') connect();
     else if (name === 'settings') openSettings();
     else if (name === 'scope') scopeSheet();
-    else if (name === 'refresh') { loadAccounts().then(ok => ok && load(true)).catch(err => say(err.message)); }
+    else if (name === 'refresh') refresh(false);
+    else if (name === 'find') find();
+    else if (name === 'unfind') unfind();
     else if (name === 'more') load(false);
     else if (name === 'markall') markAll();
     else if (name === 'unread') toggleUnread();
   });
-  $('.wm-search').addEventListener('submit', e => { e.preventDefault(); state.q = e.target.q.value.trim(); load(true); });
+  $('.wm-search').addEventListener('submit', e => { e.preventDefault(); state.q = e.target.q.value.trim(); bsearch.q.value = state.q; load(true); });
   $('.wm-search input').addEventListener('search', e => { if (!e.target.value && state.q) { state.q = ''; load(true); } });
   // New mail on return, at most every two minutes (each refresh costs Composio calls on Quick connect accounts).
   const maybeRefresh = () => { if (document.visibilityState === 'visible' && mailAccounts().length && Date.now() - state.lastLoad > 120_000 && !state.compose) load(true); };
   document.addEventListener('visibilitychange', maybeRefresh);
   addEventListener('focus', maybeRefresh);
-  new ResizeObserver(() => root.classList.toggle('wm-narrow', narrow())).observe(root);
+  new ResizeObserver(() => {
+    root.classList.toggle('wm-narrow', narrow());
+    // crossing between phone and wide flips the list order
+    if (phoneOrder !== null && phoneOrder !== phoneSize() && state.messages.length) renderList();
+    if (!phoneSize() && state.finding) { state.finding = false; bbar.classList.remove('wm-finding'); bsearch.hidden = true; }
+  }).observe(root);
 
   // ---------- badge and Wizard inbox links ----------
   // The badge counts the unread inbox mail the Wizard inbox feed lists (api/inbox, newest 50), so the icon and
@@ -572,10 +804,19 @@
       if (!v || !Array.isArray(v.items)) return;
       unreadKeys = new Set(v.items.map(i => i.key)); unreadMore = v.more === true;
       if (window.WizardApp && WizardApp.badge) WizardApp.badge.set(v.items.length, { more: unreadMore });
+      showCounts();
     } catch (_) {}
   }
-  function readOne(m) {
-    if (unreadKeys.delete(`msg:${m.account}:${m.id}`) && window.WizardApp && WizardApp.badge) WizardApp.badge.set(unreadKeys.size, { more: unreadMore });
+  function readOne(m) { unreadLocal(m, false); }
+  // Change the counted list at once (the next badge refresh confirms it from the server).
+  function unreadLocal(m, unread) {
+    const key = `msg:${m.account}:${m.id}`;
+    const had = unreadKeys.has(key);
+    if (unread && !had && state.folder === 'inbox') unreadKeys.add(key);
+    else if (!unread && had) unreadKeys.delete(key);
+    else return;
+    if (window.WizardApp && WizardApp.badge) WizardApp.badge.set(unreadKeys.size, { more: unreadMore });
+    showCounts();
   }
   function openFromLink() {
     const hit = /^#msg=([^:]+):(.+)$/.exec(location.hash || '');
