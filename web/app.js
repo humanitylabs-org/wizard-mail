@@ -16,6 +16,7 @@
     edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg>',
     archive: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v4H4zM5.5 9v10h13V9M10 13h4"/></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4.5h4V7M6.5 7l1 13h9l1-13"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H10l-5 4V5z"/></svg>',
     inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13l2.5-8h11L20 13v6H4zM4 13h5l1 2h4l1-2h5"/></svg>',
   };
 
@@ -73,7 +74,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.1' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.2' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -386,6 +387,13 @@
         button('Forward', () => compose({ mode: 'forward', from: m.account, msg }), 'wz-button secondary'));
       cell('Reply', ICON.reply, reply);
     }
+    // Reply in chat: this email as context in an unsent Chats draft to the owner's agent. Named apart from the
+    // email Reply above; shown only on shells that have the shared draft (older Wizards just don't show it).
+    if (v.context && typeof window.WizardApp?.nav?.openContextDraft === 'function') {
+      const chat = () => replyInChat(v.context);
+      bar.append(button('Reply in chat', chat, 'wz-button secondary wm-dup wm-chat'));
+      cell('Reply in chat', ICON.chat, chat);
+    }
     const more = el('div', null, 'wm-ractions');
     if (canArchive()) {
       const archive = () => archiveIt(m);
@@ -434,13 +442,24 @@
     reader.replaceChildren(bar, head, body, thumb);
     reader.scrollTop = 0;
   }
+  // Synchronous inside the tap (user activation): the context came with the message, nothing is fetched here.
+  function replyInChat(ctx) {
+    try {
+      const receipt = window.WizardApp.nav.openContextDraft(ctx);
+      if (!receipt || receipt.kind !== 'unsent-draft' || receipt.sent !== false) throw new Error('Could not confirm an unsent draft. Nothing was sent.');
+      say('Draft opened in Chats with this email attached. Nothing sent.');
+    } catch (e) {
+      say(e && e.message === 'Context draft unavailable' ? 'Reload Wizard (refresh the whole page) to turn on Reply in chat. Nothing sent.'
+        : (e && e.message) || 'Could not open Chats. Nothing sent.');
+    }
+  }
   function htmlFrame(html, images) {
     // No scripts, no forms, no top navigation; same-origin only so this page can size the frame to its content.
     const csp = `default-src 'none'; img-src data:${images ? ' https:' : ''}; style-src 'unsafe-inline'; font-src data:`;
     const frame = el('iframe', null, 'wm-frame', { title: 'Message', sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', referrerpolicy: 'no-referrer' });
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">` +
       '<meta name="referrer" content="no-referrer"><base target="_blank"><style>html{color-scheme:light}body{margin:0;padding:18px 20px;background:Canvas;color:CanvasText;' +
-      'font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{max-width:100%!important}' +
+      'font:0.9375rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{max-width:100%!important}' +
       'pre{white-space:pre-wrap}.wm-alt{display:inline-block;opacity:.6;font-size:.85em;border:1px dashed GrayText;padding:0 .3em;border-radius:3px}</style></head><body>' +
       html + '</body></html>';
     frame.addEventListener('load', () => {
