@@ -39,9 +39,12 @@
 .wm-icon { background: none; border: 0; color: var(--wz-text-secondary); padding: 6px; border-radius: var(--wz-radius-pill, 999px); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font: inherit; }
 .wm-icon:hover { background: color-mix(in srgb, var(--wz-text) 8%, transparent); color: var(--wz-text); }
 .wm-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.wm-search { padding: 0 var(--pad) var(--wz-space-2, 8px); display: flex; align-items: center; gap: var(--wz-space-2, 8px); }
-.wm-search .wz-field { width: 100%; flex: 1 1 auto; min-width: 0; }
-.wm-unreadf { flex: none; white-space: nowrap; }
+.wm-search { padding: 0 var(--pad) var(--wz-space-2, 8px); }
+.wm-search .wz-field { width: 100%; }
+/* Unread: a chip right under the Inbox chip (chip layout); a sub-item under Inbox in the side list (wide). */
+.wm-filter { display: flex; padding: 0 var(--pad) var(--wz-space-2, 8px); margin-top: -2px; }
+.wm-unreadf { white-space: nowrap; }
+.wm-navitem.wm-navsub { padding-left: 26px; font-size: var(--wz-text-sm, .8125rem); }
 .wm-unreadf[aria-pressed="true"] { background: var(--wz-accent); color: var(--wz-on-accent); border-color: transparent; }
 .wm-folders { display: flex; gap: 6px; padding: 0 var(--pad) var(--wz-space-2, 8px); overflow-x: auto; scrollbar-width: none; }
 .wm-folders::-webkit-scrollbar { display: none; }
@@ -212,7 +215,7 @@ html.wz-hosted .wc-layer { background: var(--wz-panel, color-mix(in srgb, var(--
   .wm { grid-template-columns: 220px minmax(0, 1fr); }
   .wm[data-view="reader"] { grid-template-columns: 220px minmax(300px, 360px) minmax(0, 1fr); }
   .wm-side { display: flex; flex-direction: column; gap: var(--wz-space-2, 8px); padding: var(--pad); border-right: 1px solid var(--line); overflow: auto; min-height: 0; }
-  .wm-top .wm-scope, .wm-top .wm-write-top, .wm-listpane .wm-folders { display: none; }
+  .wm-top .wm-scope, .wm-top .wm-write-top, .wm-listpane .wm-folders, .wm-listpane .wm-filter { display: none; }
   .wm-listpane .wm-top { padding-top: var(--wz-space-3, 12px); }
 }
 .wm.wm-empty-box .wm-reader { display: none; }

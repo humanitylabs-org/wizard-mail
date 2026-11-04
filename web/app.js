@@ -7,7 +7,7 @@
   const root = $('.wm');
   const listEl = $('.wm-list'), reader = $('.wm-reader'), toast = $('.wm-toast');
   const MARKABLE = new Set(['inbox', 'archive']);
-  const UNREADABLE = new Set(['inbox', 'archive', 'trash']);
+  const UNREADABLE = new Set(['inbox']);
   const FOLDERS = [['inbox', 'Inbox'], ['sent', 'Sent'], ['drafts', 'Drafts'], ['archive', 'Archive'], ['trash', 'Trash']];
   const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', unread: false, messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null };
 
@@ -63,7 +63,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.1' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.2' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader',
@@ -144,20 +144,26 @@
       nav.append(b);
     }
     const folders = $('.wm-nav-folders');
-    folders.replaceChildren(...FOLDERS.map(([id, label]) => button(label, () => pickFolder(id), 'wm-navitem' + (state.folder === id ? ' on' : ''))));
+    // Unread sits under Inbox: in the side list as Inbox's own sub-item, in the chip layout as a chip under the Inbox chip.
+    folders.replaceChildren(...FOLDERS.flatMap(([id, label]) => {
+      const on = state.folder === id && !(id === 'inbox' && state.unread);
+      const b = button(label, () => pickFolder(id, false), 'wm-navitem' + (on ? ' on' : ''));
+      if (id !== 'inbox') return [b];
+      return [b, button('Unread', () => pickFolder('inbox', true), 'wm-navitem wm-navsub' + (state.folder === 'inbox' && state.unread ? ' on' : ''))];
+    }));
     $('.wm-folders').replaceChildren(...FOLDERS.map(([id, label]) => button(label, () => pickFolder(id), 'wz-chip wm-fchip', { role: 'tab', 'aria-selected': String(state.folder === id) })));
     $('.wm-scope').textContent = accountName(state.scope) + (accounts.length > 1 ? ' ▾' : '');
     // Mark all as read: for mail that arrives (Inbox, Archive); Sent, Drafts and Trash have nothing to review.
     $('.wm-markall').hidden = !accounts.length || !MARKABLE.has(state.folder);
-    // Unread filter: for folders where mail can be unread (not Sent or Drafts); it stays on across folders and accounts.
+    // Unread filter (Inbox only): stays on across accounts; leaving the Inbox turns it off.
     const uf = $('.wm-unreadf');
-    uf.hidden = !UNREADABLE.has(state.folder);
+    $('.wm-filter').hidden = !UNREADABLE.has(state.folder);
     uf.setAttribute('aria-pressed', String(state.unread));
   }
   function unreadOnly() { return state.unread && UNREADABLE.has(state.folder); }
   function toggleUnread() { state.unread = !state.unread; renderSide(); load(true); }
   function pickScope(key) { state.scope = key; closeSheet(); renderSide(); load(true); }
-  function pickFolder(id) { state.folder = id; renderSide(); load(true); }
+  function pickFolder(id, unread) { state.folder = id; if (unread !== undefined) state.unread = unread; else if (id !== 'inbox') state.unread = false; renderSide(); load(true); }
   let sheet = null;
   function openSheet(title, ...children) {
     if (!sheet) { sheet = el('dialog', null, 'wz-sheet wm-sheet', { 'aria-label': title }); document.body.append(sheet); }
