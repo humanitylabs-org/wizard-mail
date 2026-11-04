@@ -42,8 +42,20 @@
         <div class="wm-folders" role="tablist" aria-label="Folders"></div>
         <div class="wm-filter"><button type="button" class="wz-chip wm-unreadf" data-act="unread" aria-pressed="false">Unread</button></div>
         <div class="wm-banner" hidden></div>
+        <div class="wm-pull" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg></div>
         <div class="wm-list" role="list" aria-live="polite"></div>
         <button type="button" class="wz-button secondary wm-more" data-act="more" hidden>Load more</button>
+        <div class="wm-bbar">
+          <div class="wm-bcells">
+            <button type="button" class="wm-bcell" data-act="write"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg><span>Write</span></button>
+            <button type="button" class="wm-bcell" data-act="find"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span>Search</span></button>
+            <button type="button" class="wm-bcell" data-act="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg><span>Refresh</span></button>
+          </div>
+          <form class="wm-bsearch" role="search" autocomplete="off" hidden>
+            <input class="wz-field" type="search" name="q" placeholder="Search mail" aria-label="Search mail" enterkeyhint="search" maxlength="300">
+            <button type="button" class="wm-icon wm-bclose" data-act="unfind" aria-label="Close search"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </form>
+        </div>
       </section>
       <section class="wm-reader" aria-label="Message">
         <div class="wm-placeholder"><span class="wz-tile" aria-hidden="true">✉</span><p>Choose a message to read it.</p></div>

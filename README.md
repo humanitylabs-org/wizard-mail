@@ -12,3 +12,5 @@ Badge and Wizard inbox: Mail's icon shows how many unread emails wait in your in
 
 
 Mark all as read: the button centred at the top of the list (`POST /api/mark-all-read {account, folder, q}`, Undo = `POST /api/mark-read {items, read: false}`; MCP `mail_mark_all_read`) marks every unread message in the shown scope read at the provider through the source apps' `mail_update`, side by side, at most 500 per tap.
+
+Phone-first (0.4.0): on narrow windows Write, Search and Refresh sit in a bottom bar (Search turns it into the search field; ✕ or Back closes it), an open message has Reply, Archive and Delete in a bottom bar, the list shows the newest mail at the bottom and opens there (Load more on top; new mail never moves the list while you are scrolled up), swipe a row left to Archive or right to mark it read/unread (Undo in the toast; the reader's buttons do the same), and pull the list down to refresh. Inbox and Unread show the unread count from the badge list ('50+' when there is more). Wide windows stay newest-first from the top.
