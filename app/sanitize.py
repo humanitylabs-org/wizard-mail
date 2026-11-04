@@ -161,3 +161,42 @@ def clean(raw, images=False):
         parser.out.append(f'</{parser.open.pop()}>')
     out = ''.join(parser.out)
     return (out if len(out) <= MAX_OUT else ''), parser.blocked
+
+
+BLOCKS = {'p', 'div', 'br', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'table', 'hr', 'section', 'article'}
+
+
+class _Text(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in DROP_WITH_CONTENT or tag == 'style':
+            self.skip += 1
+        elif tag in BLOCKS:
+            self.out.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in DROP_WITH_CONTENT or tag == 'style':
+            self.skip = max(0, self.skip - 1)
+        elif tag in BLOCKS:
+            self.out.append('\n')
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data)
+
+
+def text(raw, limit=20_000):
+    """Plain text of an HTML message (for Reply in chat when a source sent no text part)."""
+    if not isinstance(raw, str) or not raw.strip():
+        return ''
+    parser = _Text()
+    try:
+        parser.feed(raw[:2_000_000])
+        parser.close()
+    except Exception:  # noqa: BLE001
+        return ''
+    lines = [re.sub(r'[ \t\u00a0]+', ' ', x).strip() for x in ''.join(parser.out).splitlines()]
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()[:limit]
