@@ -7,8 +7,9 @@
   const root = $('.wm');
   const listEl = $('.wm-list'), reader = $('.wm-reader'), toast = $('.wm-toast');
   const MARKABLE = new Set(['inbox', 'archive']);
+  const UNREADABLE = new Set(['inbox', 'archive', 'trash']);
   const FOLDERS = [['inbox', 'Inbox'], ['sent', 'Sent'], ['drafts', 'Drafts'], ['archive', 'Archive'], ['trash', 'Trash']];
-  const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null };
+  const state = { accounts: null, scope: 'all', folder: 'inbox', q: '', unread: false, messages: [], cursor: null, open: null, view: 'list', loading: 0, lastLoad: 0, compose: null };
 
   // ---------- small helpers ----------
   function el(tag, text, cls, attrs) {
@@ -62,7 +63,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.0' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.3.1' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader',
@@ -148,7 +149,13 @@
     $('.wm-scope').textContent = accountName(state.scope) + (accounts.length > 1 ? ' ▾' : '');
     // Mark all as read: for mail that arrives (Inbox, Archive); Sent, Drafts and Trash have nothing to review.
     $('.wm-markall').hidden = !accounts.length || !MARKABLE.has(state.folder);
+    // Unread filter: for folders where mail can be unread (not Sent or Drafts); it stays on across folders and accounts.
+    const uf = $('.wm-unreadf');
+    uf.hidden = !UNREADABLE.has(state.folder);
+    uf.setAttribute('aria-pressed', String(state.unread));
   }
+  function unreadOnly() { return state.unread && UNREADABLE.has(state.folder); }
+  function toggleUnread() { state.unread = !state.unread; renderSide(); load(true); }
   function pickScope(key) { state.scope = key; closeSheet(); renderSide(); load(true); }
   function pickFolder(id) { state.folder = id; renderSide(); load(true); }
   let sheet = null;
@@ -179,6 +186,7 @@
     if (fresh) { state.cursor = null; listEl.replaceChildren(el('div', 'Loading…', 'wm-loading')); }
     const qs = new URLSearchParams({ account: state.scope, folder: state.folder });
     if (state.q) qs.set('q', state.q);
+    if (unreadOnly()) qs.set('unread', '1');
     if (!fresh && state.cursor) qs.set('cursor', state.cursor);
     try {
       const v = await api('api/messages?' + qs);
@@ -198,7 +206,8 @@
     $('.wm-more').hidden = !state.cursor;
     if (!state.messages.length) {
       const empty = el('div', null, 'wz-empty');
-      empty.append(el('strong', state.q ? 'Nothing matches' : 'Nothing here'), el('p', state.q ? 'Try other words.' : 'New mail shows up here.'));
+      if (unreadOnly() && !state.q) empty.append(el('strong', 'No unread mail'), el('p', 'You have read everything here.'));
+      else empty.append(el('strong', state.q ? 'Nothing matches' : 'Nothing here'), el('p', state.q ? 'Try other words.' : 'New mail shows up here.'));
       listEl.replaceChildren(empty);
       return;
     }
@@ -533,6 +542,7 @@
     else if (name === 'refresh') { loadAccounts().then(ok => ok && load(true)).catch(err => say(err.message)); }
     else if (name === 'more') load(false);
     else if (name === 'markall') markAll();
+    else if (name === 'unread') toggleUnread();
   });
   $('.wm-search').addEventListener('submit', e => { e.preventDefault(); state.q = e.target.q.value.trim(); load(true); });
   $('.wm-search input').addEventListener('search', e => { if (!e.target.value && state.q) { state.q = ''; load(true); } });

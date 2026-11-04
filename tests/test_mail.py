@@ -177,6 +177,16 @@ class MailboxTests(Base):
         self.assertEqual(sorted(m['id'] for m in more['messages']), ['g0p2', 'm0p2'])
         self.assertIsNone(more['cursor'])
 
+    def test_unread_filter_asks_the_sources_for_unread_mail_only(self):
+        page = self.box.list('all', 'inbox', caller=sources.OWNER, unread=True)
+        self.assertEqual([m['id'] for m in page['messages']], ['g0', 'm0'])
+        self.assertTrue(page['unread_only'])
+        searches = [c[2] for c in self.g.calls + self.m.calls if c[1] == 'mail_search']
+        self.assertTrue(searches and all(s.get('unread_only') is True for s in searches))
+        full = self.box.list('all', 'inbox', caller=sources.OWNER)  # its own cache entry: the full list is not the filtered one
+        self.assertEqual(len(full['messages']), 4)
+        self.assertFalse(full['unread_only'])
+
     def test_cache_until_a_change(self):
         self.box.list('google:me@gmail.com', 'inbox')
         self.box.list('google:me@gmail.com', 'inbox')
@@ -290,6 +300,10 @@ class HttpTests(Base):
         self.assertEqual((status, acc['connected']), (200, True))
         status, page, _ = self.req('GET', '/api/messages?account=all&folder=inbox')
         self.assertEqual(len(page['messages']), 4)
+        status, page, _ = self.req('GET', '/api/messages?account=all&folder=inbox&unread=1')
+        self.assertEqual((status, [m['id'] for m in page['messages']]), (200, ['g0', 'm0']))
+        status, js, _ = self.req('GET', '/app.js', owner=False)
+        self.assertIn("qs.set('unread', '1')", js)
         status, msg, _ = self.req('GET', '/api/message?account=google:me@gmail.com&id=g0')
         self.assertNotIn('<script', msg['html'])
 
@@ -404,6 +418,12 @@ class HttpTests(Base):
         refused = call({'account': 'microsoft:me@outlook.com'})
         self.assertTrue(refused['isError'])
         self.assertEqual(refused['structuredContent']['error']['code'], 'agent_access_denied')
+
+    def test_mcp_mail_list_unread_only(self):
+        v = self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'mail_list', 'arguments': {'unread_only': True}}},
+                     headers={'Host': f'127.0.0.1:{self.port}', 'X-Wizard-Agent': 'helper'}, owner=False)[1]['result']
+        self.assertFalse(v['isError'])
+        self.assertEqual(sorted(m['id'] for m in v['structuredContent']['messages']), ['g0', 'm0'])
 
     def test_mcp_box_only_and_no_send(self):
         msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
