@@ -16,7 +16,6 @@
     edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg>',
     archive: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v4H4zM5.5 9v10h13V9M10 13h4"/></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V4.5h4V7M6.5 7l1 13h9l1-13"/></svg>',
-    chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H10l-5 4V5z"/></svg>',
     inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13l2.5-8h11L20 13v6H4zM4 13h5l1 2h4l1-2h5"/></svg>',
   };
 
@@ -74,7 +73,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.2' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.3' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -387,13 +386,6 @@
         button('Forward', () => compose({ mode: 'forward', from: m.account, msg }), 'wz-button secondary'));
       cell('Reply', ICON.reply, reply);
     }
-    // Reply in chat: this email as context in an unsent Chats draft to the owner's agent. Named apart from the
-    // email Reply above; shown only on shells that have the shared draft (older Wizards just don't show it).
-    if (v.context && typeof window.WizardApp?.nav?.openContextDraft === 'function') {
-      const chat = () => replyInChat(v.context);
-      bar.append(button('Reply in chat', chat, 'wz-button secondary wm-dup wm-chat'));
-      cell('Reply in chat', ICON.chat, chat);
-    }
     const more = el('div', null, 'wm-ractions');
     if (canArchive()) {
       const archive = () => archiveIt(m);
@@ -410,6 +402,12 @@
       cell('Delete', ICON.trash, del);
     }
     if (state.folder !== 'drafts') more.append(button('Mark unread', () => markUnread(m), 'wz-chip'));
+    // Reply in chat: this email as context in an unsent Chats draft to the owner's agent. Named apart from the
+    // email Reply above. In this row so it shows at every width without crowding the phone bar; shown only on
+    // shells that have the shared draft (older Wizards just don't show it).
+    if (v.context && typeof window.WizardApp?.nav?.openContextDraft === 'function') {
+      more.append(button('Reply in chat', () => replyInChat(v.context), 'wz-chip wm-chat'));
+    }
     const head = el('header', null, 'wm-rhead');
     head.append(el('h2', msg.subject || '(no subject)', 'wm-rsubj'));
     const from = el('div', null, 'wm-rfrom');

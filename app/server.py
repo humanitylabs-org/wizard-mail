@@ -23,7 +23,7 @@ from sources import MailError, OWNER  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.4.2'
+VERSION = '0.4.3'
 ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
