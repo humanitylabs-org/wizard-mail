@@ -1,9 +1,9 @@
 /* Mail Settings, modelled on Wizard Messenger's Settings (Miguel): "Connected accounts" as flat brand tiles with a
- * green dot, a + tile that opens the in-app Quick connect sheet (connect.js), and "Agent access": one row with the
- * same picker as Messenger (No access / Read-only / Draft only (recommended)).
+ * green dot, a + tile that opens the in-app Quick connect sheet (connect.js), and "Agent access": one row per agent
+ * with Messenger's picker (No access / Read-only / Draft-only (recommended) / Draft-and-send).
  *
- * The level is kept and enforced by the source apps (wizard-google, wizard-microsoft: agent_access.py), so it holds
- * even when an agent calls their tools directly. This screen reads and writes it through their owner routes on this
+ * Each agent's level is kept and enforced by the source apps (wizard-google, wizard-microsoft: agent_access.py),
+ * which take an agent's name only from the gateway's grant. This screen reads and writes it through their owner routes on this
  * same origin (`/wizard-google/api/mail-settings`, `api/agent-access`), which need the owner's Wizard session: no
  * agent or bearer path can change it. Classes are prefixed `wst-` (host apps' generic classes leak in). */
 (() => {
@@ -22,9 +22,10 @@
   };
   const NAMES = { google: 'Google', microsoft: 'Microsoft' };
   const VIA = { composio: 'Quick connect', 'own-client': 'Your own Google app', 'own-app': 'Your own Microsoft app' };
-  const LEVEL_TEXT = { no_access: 'Agents can\'t read your mail.', read_only: 'Agents read and search your mail. They can\'t draft or send.',
-    draft_only: 'Agents read, sort and write drafts. Only you send, from Mail.' };
-  const RANK = { no_access: 0, read_only: 1, draft_only: 2 };
+  // Messenger's wording (Settings > Agent access), for mail; the same text the source apps send as `what`.
+  const LEVEL_TEXT = { no_access: 'Can\'t read your mail.', read_only: 'Reads mail. Can\'t draft.',
+    draft_only: 'Reads and drafts. Only you send.', draft_and_send: 'Reads and sends without your review.' };
+  const RANK = { no_access: 0, read_only: 1, draft_only: 2, draft_and_send: 3 };
 
   function el(tag, text, cls, attrs) {
     const n = document.createElement(tag);
@@ -119,7 +120,40 @@
     group.append(row);
     return [el('h3', 'Mail list', 'wst-h'), group];
   }
-  // ---------- agent access: one row, Messenger's picker ----------
+  // ---------- agent access: one row per agent, Messenger's levelRow (Settings > Agent access) ----------
+  // A copy of Messenger's `levelRow` (static/unified.js): the agent's name and its level picker, nothing under it; the
+  // recommended level says so inside the options; Draft-and-send is listed only for an agent already at it (Messenger
+  // keeps it off the everyday picker); a change saves at once. Mail keeps the level in each source app
+  // (agent_access.py), which enforces it per agent; choosing here sets it in every connected source.
+  function levelRow(agent, name, levels, save) {
+    const row = el('div', null, 'wst-row wst-agent-row');
+    const choice = el('select', null, 'wst-level', { 'aria-label': 'What ' + name + ' may do' });
+    const shown = levels.filter(l => l.id !== 'draft_and_send' || agent.level === 'draft_and_send');
+    for (const l of shown) choice.append(el('option', l.label + (l.recommended ? ' (recommended)' : ''), null, { value: l.id, title: LEVEL_TEXT[l.id] || l.what }));
+    choice.value = agent.level; choice.title = LEVEL_TEXT[agent.level] || '';
+    choice.onchange = async () => {
+      const level = choice.value;
+      choice.disabled = true;
+      try { await save(level); say(name + ': ' + shown.find(l => l.id === level).label); }
+      catch (e) { choice.value = agent.level; say(e.message); }
+      finally { choice.disabled = false; }
+    };
+    row.append(el('strong', name, 'wst-agent'), choice);
+    return row;
+  }
+  // Every agent any source knows (the gateway names them on their first call), the stricter level if sources differ.
+  function agentsOf(known) {
+    const by = new Map();
+    for (const s of known) {
+      const rows = s.access.agents || [{ id: 'main', label: 'Your Wizard agent', level: s.access.mail, main: true }];
+      for (const a of rows) {
+        const had = by.get(a.id);
+        if (!had) by.set(a.id, { ...a, levels: new Set([a.level]) });
+        else { had.levels.add(a.level); if (RANK[a.level] < RANK[had.level]) had.level = a.level; if (!had.label && a.label) had.label = a.label; }
+      }
+    }
+    return [...by.values()].sort((x, y) => (y.main - x.main) || String(x.label).localeCompare(String(y.label)));
+  }
   function agentAccess() {
     const known = data.sources.filter(s => s.access);
     const old = data.sources.filter(s => s.available && !s.access && s.accounts.length);
@@ -129,34 +163,22 @@
         : 'Connect an account first.', 'wst-muted'));
       return out;
     }
-    // One level for every source; if they ever differ, show the stricter one (choosing sets both).
-    const level = known.map(s => s.access.mail).sort((x, y) => RANK[x] - RANK[y])[0];
     const levels = known[0].access.levels;
-    const group = el('div', null, 'wst-group');
-    const row = el('div', null, 'wst-row');
-    const choice = el('select', null, 'wst-level', { 'aria-label': 'What your agents may do with mail' });
-    for (const l of levels) {
-      const o = el('option', l.label + (l.recommended ? ' (recommended)' : ''), null, { value: l.id, title: LEVEL_TEXT[l.id] || l.what });
-      choice.append(o);
+    const group = el('div', null, 'wst-group wst-agents');
+    const agents = agentsOf(known);
+    for (const agent of agents) {
+      group.append(levelRow(agent, agent.label || 'Your Wizard agent', levels, async level => {
+        // An older source keeps one level for every agent: it takes the main agent's pick only.
+        for (const s of known) {
+          if (!s.access.per_agent && !agent.main) continue;
+          s.access = (await client(s.id).api('api/agent-access', s.access.per_agent ? { mail: level, agent: agent.id } : { mail: level })).agent_access;
+        }
+        agent.level = level;
+      }));
     }
-    choice.value = level;
-    const note = el('p', LEVEL_TEXT[level] || '', 'wst-note');
-    choice.onchange = async () => {
-      const want = choice.value;
-      choice.disabled = true;
-      try {
-        for (const s of known) s.access = (await client(s.id).api('api/agent-access', { mail: want })).agent_access;
-        note.textContent = LEVEL_TEXT[want] || '';
-        say(`Agent access: ${levels.find(l => l.id === want).label}`);
-      } catch (e) {
-        choice.value = level;
-        say(e.message);
-      } finally { choice.disabled = false; }
-    };
-    row.append(el('strong', 'Agents', 'wst-agent'), choice);
-    group.append(row);
-    out.push(group, note);
-    if (known.some(s => s.access.mail !== level)) out.push(el('p', 'Google and Microsoft were set differently; choosing sets both.', 'wst-muted'));
+    out.push(group);
+    if (agents.some(a => a.levels.size > 1)) out.push(el('p', 'Google and Microsoft were set differently; choosing sets both.', 'wst-muted'));
+    if (known.some(s => !s.access.per_agent)) out.push(el('p', `Update the ${known.filter(s => !s.access.per_agent).map(s => NAMES[s.id]).join(' and ')} app to set each agent apart.`, 'wst-muted'));
     return out;
   }
 
