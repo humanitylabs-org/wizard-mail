@@ -51,11 +51,15 @@ def parse_sources(value):
 
 
 OWNER = 'owner'
-AGENT_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,62}')
+# A box whose App Manager does not write the gateway's row yet: Mail cannot tell agents apart, so the call is the main
+# agent's and Mail does not vouch for any name (it sends no grant with it).
+LOCAL = 'local:main'
+AGENT_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
+PER_AGENT_TTL = 300
 
 
 def agent(name):
-    """The caller for a request made by an agent through Mail's MCP. The source applies the owner's agent level."""
+    """The caller for an agent the gateway named (its grant matched). The source applies that agent's own level."""
     name = str(name or 'main').strip().lower()
     return 'agent:' + (name if AGENT_NAME.fullmatch(name) else 'main')
 
@@ -91,19 +95,46 @@ class Grants:
 class Source:
     """One source app. Plain HTTP on the app network; the source refuses browsers and forwarded requests."""
 
-    def __init__(self, sid, base, timeout=30, grants=None):
+    def __init__(self, sid, base, timeout=30, grants=None, clock=time.time):
         self.id, self.base, self.timeout = sid, base, timeout
         self.grants = grants
+        self.clock = clock
+        self.per_agent = (None, 0.0)  # does this source take Mail's grant plus a verified agent name? (answer, when)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+    def relays_agents(self, grant):
+        """True when this source applies the named agent's own level to Mail's grant plus X-Wizard-Agent. An older
+        source would take Mail's grant as the owner's tap, so Mail never sends it with an agent's name there."""
+        known, at = self.per_agent
+        if known is not None and self.clock() - at < PER_AGENT_TTL:
+            return known
+        try:
+            value = self._open('GET', '/v1/status', None, {'X-Wizard-Grant': grant})
+            known = value.get('per_agent_callers') is True
+        except MailError:
+            known = False
+        self.per_agent = (known, self.clock())
+        return known
+
     def call(self, method, path, body=None, caller=None):
-        data = json.dumps(body).encode() if body is not None else None
-        headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
-        grant = self.grants.token(APPS[self.id]) if caller == OWNER and self.grants else None
-        if grant:
-            headers['X-Wizard-Grant'] = grant  # the owner's own tap in Mail
+        headers = {}
+        grant = self.grants.token(APPS[self.id]) if self.grants else None
+        caller = caller or LOCAL
+        if caller == OWNER:
+            if grant:
+                headers['X-Wizard-Grant'] = grant  # the owner's own tap in Mail
+            else:
+                headers['X-Wizard-Agent'] = 'wizard-mail'
+        elif caller.startswith('agent:') and grant and self.relays_agents(grant):
+            # An agent the gateway named to Mail: Mail vouches for the name with its grant; the source applies its level.
+            headers.update({'X-Wizard-Grant': grant, 'X-Wizard-Agent': caller.split(':', 1)[1]})
         else:
-            headers['X-Wizard-Agent'] = (caller or agent(None)).split(':', 1)[-1] if caller != OWNER else 'wizard-mail'
+            headers['X-Wizard-Agent'] = caller.split(':', 1)[1] if caller.startswith('agent:') else 'main'
+        return self._open(method, path, body, headers, caller)
+
+    def _open(self, method, path, body, extra, caller=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {'Accept': 'application/json', 'Content-Type': 'application/json', **extra}
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=self.timeout) as response:

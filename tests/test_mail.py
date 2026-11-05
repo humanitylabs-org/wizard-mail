@@ -1,10 +1,12 @@
 """Wizard Mail tests. The Google and Microsoft apps are fakes (labelled) speaking wizard.mail-calendar/1 over real HTTP;
 nothing talks to Google, Microsoft or Composio."""
 import http.client
+import hashlib
 import json
 import sys
 import tempfile
 import threading
+import re
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,14 +42,16 @@ class FakeSource:
 
             def do_GET(self):
                 assert not self.headers.get('Origin') and not self.headers.get('Cookie')
-                source.calls.append(('GET', self.path, None, self.headers.get('X-Wizard-Agent')))
-                self.reply(200, {'accounts': source.accounts})
+                source.calls.append(('GET', self.path, None, self.headers.get('X-Wizard-Agent'), self.headers.get('X-Wizard-Grant')))
+                level = source.levels.get(self.headers.get('X-Wizard-Agent') or '') if source.per_agent else None
+                self.reply(200, {'accounts': source.accounts, **({'per_agent_callers': True} if source.per_agent else {}),
+                                 **({'mail_access': {'level': level, 'label': level}} if level else {})})
 
             def do_POST(self):
                 assert not self.headers.get('Origin') and not self.headers.get('Cookie')
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 tool = self.path.rsplit('/', 1)[1]
-                source.calls.append(('POST', tool, body, self.headers.get('X-Wizard-Agent')))
+                source.calls.append(('POST', tool, body, self.headers.get('X-Wizard-Agent'), self.headers.get('X-Wizard-Grant')))
                 source.grants_seen.append(self.headers.get('X-Wizard-Grant'))
                 if source.fail:
                     return self.reply(*source.fail)
@@ -57,6 +61,7 @@ class FakeSource:
                 self.reply(200, source.tool(tool, body))
 
         self.grants_seen = []
+        self.per_agent, self.levels = False, {}  # a source that takes Mail's grant plus a verified agent name
         self.srv = ThreadingHTTPServer(('127.0.0.1', 0), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f'http://127.0.0.1:{self.srv.server_address[1]}'
@@ -148,7 +153,7 @@ class Base(unittest.TestCase):
         self.g = FakeSource('google', accounts(('me@gmail.com', 'active', ['gmail', 'calendar'])))
         self.m = FakeSource('microsoft', accounts(('me@outlook.com', 'active', ['mail', 'calendar']), ('old@hotmail.com', 'reauth_required', ['mail'])))
         self.grants_file = Path(tempfile.mkdtemp()) / 'grants.json'
-        self.grants_file.write_text(json.dumps({'outgoing': {'wizard-google': self.g.grant, 'wizard-microsoft': self.m.grant}}))
+        self.grants_file.write_text(json.dumps({'outgoing': {'wizard-google': self.g.grant, 'wizard-microsoft': self.m.grant}, 'incoming': []}))
         self.box = sources.Mailbox({'google': self.g.base, 'microsoft': self.m.base}, grants_file=str(self.grants_file))
 
     def tearDown(self):
@@ -288,6 +293,17 @@ class HttpTests(Base):
     def tearDown(self):
         self.srv.shutdown()
         super().tearDown()
+
+    GATEWAY_KEY = 'gateway-grant-key-0123456789abcdef'
+
+    def via_gateway(self, agent):
+        """The box's App Manager wrote the gateway's row in Mail's grants file; the gateway names the agent."""
+        doc = json.loads(self.grants_file.read_text())
+        row = {'from': 'host:agent-service', 'sha256': hashlib.sha256(self.GATEWAY_KEY.encode()).hexdigest()}
+        if row not in doc['incoming']:
+            doc['incoming'].append(row)
+            self.grants_file.write_text(json.dumps(doc))
+        return {'X-Wizard-Grant': self.GATEWAY_KEY, 'X-Wizard-Agent': agent}
 
     def req(self, method, path, body=None, headers=None, owner=True):
         h = {'Host': self.HOST}
@@ -430,7 +446,7 @@ class HttpTests(Base):
 
     def test_mcp_mark_all_read_is_an_agent_call(self):
         call = lambda args: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'mail_mark_all_read', 'arguments': args}},
-                                     headers={'Host': f'127.0.0.1:{self.port}', 'X-Wizard-Agent': 'helper'}, owner=False)[1]['result']
+                                     headers={'Host': f'127.0.0.1:{self.port}', **self.via_gateway('helper')}, owner=False)[1]['result']
         done = call({'account': 'microsoft:me@outlook.com'})
         self.assertFalse(done['isError'])
         self.assertEqual(done['structuredContent']['count'], 2)
@@ -444,9 +460,39 @@ class HttpTests(Base):
 
     def test_mcp_mail_list_unread_only(self):
         v = self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'mail_list', 'arguments': {'unread_only': True}}},
-                     headers={'Host': f'127.0.0.1:{self.port}', 'X-Wizard-Agent': 'helper'}, owner=False)[1]['result']
+                     headers={'Host': f'127.0.0.1:{self.port}', **self.via_gateway('helper')}, owner=False)[1]['result']
         self.assertFalse(v['isError'])
         self.assertEqual(sorted(m['id'] for m in v['structuredContent']['messages']), ['g0', 'm0'])
+
+    def test_direct_calls_need_the_gateway_once_it_has_its_row(self):
+        self.via_gateway('main')
+        msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'mail_list', 'arguments': {}}}
+        for headers in ({}, {'X-Wizard-Agent': 'secure'}, {'X-Wizard-Grant': 'forged-key-000000000000', 'X-Wizard-Agent': 'secure'}):
+            status, v, _ = self.req('POST', '/mcp', msg, headers={'Host': f'127.0.0.1:{self.port}', **headers}, owner=False)
+            self.assertEqual((status, v['error']['code']), (401, 'gateway_grant_required'), headers)
+        self.assertEqual([c for c in self.g.calls if c[0] == 'POST'], [])  # nothing reached the source
+
+    def test_a_verified_agent_is_relayed_with_mails_grant_to_a_per_agent_source(self):
+        self.g.per_agent = self.m.per_agent = True
+        self.g.levels = self.m.levels = {'secure': 'no_access', 'main': 'draft_only'}
+        call = lambda agent, name: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': name, 'params': {}},
+                                            headers={'Host': f'127.0.0.1:{self.port}', **self.via_gateway(agent)}, owner=False)[1]['result']
+        # Tools follow the agent's own level: Secure (No access everywhere) sees only mail_accounts.
+        self.assertEqual([t['name'] for t in call('secure', 'tools/list')['tools']], ['mail_accounts'])
+        self.assertIn('mail_draft', [t['name'] for t in call('hermes', 'tools/list')['tools']])
+        self.g.calls.clear()
+        self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'mail_list', 'arguments': {}}},
+                 headers={'Host': f'127.0.0.1:{self.port}', **self.via_gateway('secure')}, owner=False)
+        posts = [(c[3], c[4]) for c in self.g.calls if c[0] == 'POST']
+        self.assertTrue(posts)
+        self.assertEqual(set(posts), {('secure', self.g.grant)})  # Mail vouches for Secure; the source applies Secure's level
+
+    def test_box_without_the_gateway_row_is_the_main_agent(self):
+        call = lambda headers: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'mail_list', 'arguments': {}}},
+                                        headers={'Host': f'127.0.0.1:{self.port}', **headers}, owner=False)[1]['result']
+        self.assertFalse(call({'X-Wizard-Agent': 'secure'})['isError'])
+        self.assertEqual({c[3] for c in self.g.calls if c[0] == 'POST'}, {'main'})  # never the name it gave
+        self.assertEqual(set(self.g.grants_seen), {None})
 
     def test_mcp_box_only_and_no_send(self):
         msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
@@ -485,6 +531,16 @@ class PackageTests(unittest.TestCase):
         for name in ('app/server.py', 'app/sources.py', 'app/sanitize.py', 'web/app.js', 'web/connect.js', 'web/index.html'):
             self.assertIn(name, package.FILES)
 
+
+
+class GatewayDeclarationTest(unittest.TestCase):
+    def test_wizard_md_asks_the_app_manager_for_the_gateway_row(self):
+        # Without it the App Manager writes no host:agent-service row, and this app cannot tell the gateway's
+        # calls (and the agent each names) from any other caller on a real box: every agent gets the main level.
+        text = (ROOT / 'wizard.md').read_text()
+        mcp = re.search(r'^mcp:\n((?:  .*\n)+)', text, re.M)
+        self.assertIsNotNone(mcp)
+        self.assertRegex(mcp.group(1), r'(?m)^  checks_gateway: true$')
 
 if __name__ == '__main__':
     unittest.main()

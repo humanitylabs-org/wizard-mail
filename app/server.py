@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sources as sources_mod  # noqa: E402
 from sources import MailError, OWNER  # noqa: E402
+from gateway import GatewayGrant  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
@@ -124,6 +125,25 @@ TOOLS = [
 ]
 
 
+# What each Mail tool needs, in the sources' level names (Messenger's: No access < Read-only < Draft-only < Draft-and-send).
+NEEDS = {'mail_list': 'read_only', 'mail_read': 'read_only', 'mail_draft': 'draft_only', 'mail_mark_all_read': 'draft_only'}
+RANK = {'no_access': 0, 'read_only': 1, 'draft_only': 2, 'draft_and_send': 3}
+
+
+def visible_tools(app, caller):
+    """The tools this agent's own level allows in at least one source (the sources still check every call). A source
+    that can't say (older or unreachable) counts as allowing everything, as before."""
+    try:
+        found = app.mailbox.accounts(caller)['sources']
+    except MailError:
+        return TOOLS
+    levels = [((s.get('agent_access') or {}).get('level')) for s in found if s.get('available')]
+    if not levels or any(level not in RANK for level in levels):
+        return TOOLS
+    best = max(RANK[level] for level in levels)
+    return [t for t in TOOLS if RANK.get(NEEDS.get(t['name'], 'no_access'), 0) <= best]
+
+
 def rpc(app, message, caller=None):
     caller = caller or sources_mod.agent(None)
     if not isinstance(message, dict) or message.get('jsonrpc') != '2.0' or not isinstance(message.get('method'), str):
@@ -137,7 +157,7 @@ def rpc(app, message, caller=None):
     if method == 'ping':
         return {'jsonrpc': '2.0', 'id': rid, 'result': {}}
     if method == 'tools/list':
-        return {'jsonrpc': '2.0', 'id': rid, 'result': {'tools': TOOLS}}
+        return {'jsonrpc': '2.0', 'id': rid, 'result': {'tools': visible_tools(app, caller)}}
     if method != 'tools/call' or not isinstance(params, dict):
         return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': -32601, 'message': 'Method not found'}}
     name, args = params.get('name'), params.get('arguments') or {}
@@ -173,6 +193,7 @@ class App:
     def __init__(self, config, mailbox=None):
         self.config = config
         self.mailbox = mailbox or sources_mod.Mailbox(config.sources, grants_file=config.grants_file)
+        self.gateway = GatewayGrant(config.grants_file)
 
 
 def handler_for(app):
@@ -252,11 +273,19 @@ def handler_for(app):
             host = (self.headers.get('Host') or '').lower()
             supplied = self.headers.get('Authorization', '')
             if config.admin_token and supplied and hmac.compare_digest(supplied, 'Bearer ' + config.admin_token):
-                return sources_mod.agent(self.headers.get('X-Wizard-Agent'))
+                return sources_mod.agent('main')  # the owner's own MCP secret: the main agent, never a claimed name
             if not (host in config.local_hosts and not supplied):
                 raise MailError(401, 'not_box_local', 'MCP is for agents on this box.')
-            # An agent: Mail passes its name on and never its own grant, so the source applies the owner's agent level.
-            return sources_mod.agent(self.headers.get('X-Wizard-Agent'))
+            # Which agent is calling comes from the gateway's grant (`host:agent-service` in Mail's grants file), never
+            # from the name a caller gives itself. Mail passes a verified name on to the sources, which apply that
+            # agent's own level (wizard-google / wizard-microsoft agent_access.py).
+            grant = self.headers.get('X-Wizard-Grant') or ''
+            if grant and app.gateway.matches(grant):
+                return sources_mod.agent(self.headers.get('X-Wizard-Agent'))
+            if grant or app.gateway.state() in ('rows', 'bad'):
+                raise MailError(401, 'gateway_grant_required', 'Agents reach Mail through the Wizard gateway (mcp__wizard__...), not directly.')
+            # A box whose App Manager does not write the gateway's row yet: the main agent, whatever name it gives.
+            return sources_mod.LOCAL
 
         def body(self):
             if (self.headers.get('Content-Type') or '').split(';')[0].strip().lower() != 'application/json':
