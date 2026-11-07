@@ -126,6 +126,19 @@
 .wm-cfield > span { color: var(--wz-text-muted); font-size: var(--wz-text-sm, .8125rem); }
 .wm-ctoggles { display: flex; gap: 6px; justify-content: flex-end; }
 .wm-cbody { min-height: 32vh; resize: vertical; font: inherit; line-height: 1.5; }
+/* attachments: Attach chip + one chip per file (name, size, ✕) */
+.wm-cattach { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wz-chip.wm-attach { cursor: pointer; border: 0; box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: var(--wz-text-sm, .8125rem); color: var(--wz-text); }
+.wz-chip.wm-attach:disabled { opacity: .5; cursor: default; }
+.wm-cfiles { display: contents; list-style: none; margin: 0; padding: 0; }
+.wz-chip.wm-cfile { max-width: 100%; min-width: 0; padding-right: 2px; box-shadow: inset 0 0 0 1px var(--line); }
+.wm-cfname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; color: var(--wz-text); }
+.wm-cfile small { color: var(--wz-text-muted); white-space: nowrap; }
+.wm-cfile.wm-reading { opacity: .7; }
+.wm-cfx { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 0; border: 0; border-radius: var(--wz-radius-pill, 999px);
+  background: none; color: var(--wz-text-secondary); font: inherit; cursor: pointer; }
+.wm-cfx:hover, .wm-cfx:focus-visible { background: color-mix(in srgb, var(--wz-text) 10%, transparent); color: var(--wz-text); }
+.wm-cnote { margin: 0; color: var(--wz-text-muted); font-size: var(--wz-text-sm, .8125rem); }
 .wm-cmsg { margin: 0; min-height: 1.2em; color: var(--wz-text-secondary); font-size: var(--wz-text-sm, .8125rem); }
 
 /* toast */
@@ -318,4 +331,6 @@ html[data-presentation="immersive"] .wm-bbar, html[data-presentation="immersive"
   .wz-chip.wm-fchip, .wz-chip.wm-unreadf, .wz-chip.wm-scope, .wm-ractions .wz-chip, .wz-button.wm-markall, .wm-rbar .wz-button, .wz-button.wm-more, .wm-banner .wz-button, .wm-imgnote .wz-button { min-height: 44px; }
   .wm-narrow .wm-rbar .wz-button { min-height: 44px; }
   .wm-item { min-height: 52px; }
+  .wz-chip.wm-attach, .wz-chip.wm-cfile { min-height: 44px; }
+  .wm-cfx { min-width: 44px; min-height: 44px; }
 }
