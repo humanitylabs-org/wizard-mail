@@ -1,5 +1,6 @@
 """Wizard Mail tests. The Google and Microsoft apps are fakes (labelled) speaking wizard.mail-calendar/1 over real HTTP;
 nothing talks to Google, Microsoft or Composio."""
+import base64
 import http.client
 import json
 import sys
@@ -23,6 +24,7 @@ class FakeSource:
     def __init__(self, sid, accounts):
         self.sid, self.accounts, self.calls, self.drafts, self.sent, self.flags = sid, accounts, [], {}, [], {}
         self.fail = None
+        self.old_contract = False  # True: a source app from before contract 1.2 (no draft attachments)
         self.grant = f'grant-for-wizard-mail-at-{sid}'  # what the App Manager gave Mail for this source
         source = self
 
@@ -86,9 +88,19 @@ class FakeSource:
             self.flags[a['id']] = {k: a[k] for k in ('read', 'archived', 'trashed') if k in a}
             return {'updated': True, 'id': a['id'] + ('M' if self.sid == 'microsoft' and ('archived' in a or 'trashed' in a) else ''), **self.flags[a['id']]}
         if name == 'mail_draft':
-            did = f'd{len(self.drafts) + 1}'
-            self.drafts[did] = a
-            return {'draft': {'id': did, 'to': a.get('to', []), 'subject': a.get('subject', '')}, 'sent': False}
+            files = [{'name': f['name'], 'mime': f.get('mime'), 'size': len(f['base64']) * 3 // 4} for f in a.get('attachments') or []]
+            if a.get('draft_id'):  # contract 1.2: in place, the draft's files kept unless removed
+                did = a['draft_id']
+                old = self.drafts[did]
+                kept = [f for f in old.get('files', []) if f['name'] not in (a.get('remove_attachments') or [])]
+                self.drafts[did] = {**old, **{k: v for k, v in a.items() if k not in ('draft_id', 'attachments')}, 'files': kept + files}
+            else:
+                did = f'd{len(self.drafts) + 1}'
+                self.drafts[did] = {**a, 'files': files}
+            view = {'id': did, 'to': self.drafts[did].get('to', []), 'subject': self.drafts[did].get('subject', '')}
+            if not self.old_contract:
+                view['attachments'] = self.drafts[did]['files']
+            return {'draft': view, 'sent': False, 'updated': bool(a.get('draft_id'))}
         if name == 'mail_send':
             if a['draft_id'] not in self.drafts:
                 return {'error': {'code': 'not_found'}}
@@ -250,6 +262,38 @@ class MailboxTests(Base):
                 self.box.draft('microsoft:me@outlook.com', {'body': 'x', **bad})
         with self.assertRaises(sources.MailError):
             self.box.draft('yahoo:me@yahoo.com', {'to': ['a@example.com'], 'body': 'x'})
+
+    def test_draft_attachments_and_in_place_edit(self):
+        pdf = base64.b64encode(b'%PDF-1.4 x').decode()
+        d = self.box.draft('google:me@gmail.com', {'to': ['a@example.com'], 'subject': 'Plan', 'body': 'See attached',
+                                                  'attachments': [{'name': 'plan.pdf', 'mime': 'application/pdf', 'base64': pdf}]}, sources.OWNER)
+        self.assertEqual([f['name'] for f in d['draft']['attachments']], ['plan.pdf'])
+        sent = [c for c in self.g.calls if c[1] == 'mail_draft'][-1][2]
+        self.assertEqual(sent['attachments'], [{'name': 'plan.pdf', 'base64': pdf, 'mime': 'application/pdf'}])
+        # Edit in place: same draft id, the file stays, a new one is added, nothing trashed.
+        e = self.box.draft('google:me@gmail.com', {'draft_id': d['draft']['id'], 'to': ['a@example.com'], 'subject': 'Plan v2', 'body': 'New',
+                                                  'attachments': [{'name': 'b.txt', 'base64': base64.b64encode(b'hi').decode()}]}, sources.OWNER)
+        self.assertEqual(e['draft']['id'], d['draft']['id'])
+        self.assertEqual([f['name'] for f in e['draft']['attachments']], ['plan.pdf', 'b.txt'])
+        r = self.box.draft('google:me@gmail.com', {'draft_id': d['draft']['id'], 'remove_attachments': ['b.txt']}, sources.agent('main'))
+        self.assertEqual([f['name'] for f in r['draft']['attachments']], ['plan.pdf'])
+        self.assertNotIn('body', [c for c in self.g.calls if c[1] == 'mail_draft'][-1][2])  # left out = kept by the source
+        self.assertFalse(any(c[1] == 'mail_update' for c in self.g.calls))
+        # Forward: the original's files are copied by the source.
+        self.box.draft('google:me@gmail.com', {'to': ['b@example.com'], 'subject': 'Fwd', 'body': 'x', 'attachments_from': 'g0'}, sources.OWNER)
+        self.assertEqual([c for c in self.g.calls if c[1] == 'mail_draft'][-1][2]['attachments_from'], 'g0')
+        # Refused early: paths, bad base64, too many, too big.
+        for bad in ([{'name': '../x.pdf', 'base64': pdf}], [{'name': 'a/b', 'base64': pdf}], [{'name': '..', 'base64': pdf}],
+                    [{'name': 'x.pdf', 'base64': 'not base64!'}], [{'name': f'{i}.pdf', 'base64': pdf} for i in range(11)],
+                    [{'name': 'big.bin', 'base64': 'A' * (25 * 1024 * 1024)}], 'x.pdf'):
+            with self.assertRaises(sources.MailError, msg=str(bad)[:60]):
+                self.box.draft('google:me@gmail.com', {'to': ['a@example.com'], 'body': 'x', 'attachments': bad})
+        # An older source app would drop the files silently: Mail says to update it instead.
+        self.g.old_contract = True
+        with self.assertRaises(sources.MailError) as caught:
+            self.box.draft('google:me@gmail.com', {'to': ['a@example.com'], 'body': 'x', 'attachments': [{'name': 'a.pdf', 'base64': pdf}]})
+        self.assertEqual(caught.exception.code, 'source_too_old')
+        self.assertIn('Update the Google app', caught.exception.message)
 
     def test_source_down_and_errors(self):
         self.g.close()
@@ -447,6 +491,35 @@ class HttpTests(Base):
                      headers={'Host': f'127.0.0.1:{self.port}', 'X-Wizard-Agent': 'helper'}, owner=False)[1]['result']
         self.assertFalse(v['isError'])
         self.assertEqual(sorted(m['id'] for m in v['structuredContent']['messages']), ['g0', 'm0'])
+
+    def test_big_draft_body_over_http(self):
+        pdf = base64.b64encode(b'%PDF' + b'0' * 3_000_000).decode()  # ~4 MB of JSON, far over the ordinary cap
+        status, d, _ = self.req('POST', '/api/draft', {'account': 'google:me@gmail.com', 'to': ['a@example.com'], 'subject': 'Big', 'body': '',
+                                                       'attachments': [{'name': 'big.pdf', 'mime': 'application/pdf', 'base64': pdf}]})
+        self.assertEqual(status, 200, d)
+        self.assertEqual(d['draft']['attachments'][0]['name'], 'big.pdf')
+        status, v, _ = self.req('POST', '/api/update', {'account': 'google:me@gmail.com', 'id': 'g0', 'read': True, 'pad': 'x' * 200_000})
+        self.assertEqual((status, v['error']['code']), (413, 'body_size'))
+        # Over the draft cap: a plain answer, before reading the body.
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        conn.putrequest('POST', '/api/draft', skip_host=True)
+        for k, val in {'Host': self.HOST, 'Tailscale-User-Login': 'owner@example.com', 'X-Wizard-Request': 'mail', 'Sec-Fetch-Site': 'same-origin',
+                       'Origin': 'https://' + self.HOST, 'Content-Type': 'application/json', 'Content-Length': str(30_000_000)}.items():
+            conn.putheader(k, val)
+        conn.endheaders()
+        r = conn.getresponse()
+        v = json.loads(r.read())
+        conn.close()
+        self.assertEqual((r.status, v['error']['code']), (413, 'files_too_big'))
+        self.assertIn('18 MB', v['error']['message'])
+
+    def test_mcp_draft_schema_offers_files(self):
+        msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
+        _, v, _ = self.req('POST', '/mcp', msg, headers={'Host': f'127.0.0.1:{self.port}'}, owner=False)
+        schema = next(t for t in v['result']['tools'] if t['name'] == 'mail_draft')['inputSchema']
+        for key in ('attachments', 'draft_id', 'remove_attachments', 'attachments_from'):
+            self.assertIn(key, schema['properties'])
+        self.assertEqual(schema['required'], ['account'])
 
     def test_mcp_box_only_and_no_send(self):
         msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}

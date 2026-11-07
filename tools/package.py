@@ -27,7 +27,7 @@ services:
     - ALL
     security_opt:
     - no-new-privileges:true
-    mem_limit: 160m
+    mem_limit: 256m
     read_only: true
     tmpfs:
     - /tmp:rw,nosuid,size=32m,uid=1000,gid=1000

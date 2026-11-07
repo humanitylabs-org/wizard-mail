@@ -40,6 +40,40 @@ class MailError(Exception):
         return {'code': self.code, 'message': self.message, **self.extra}
 
 
+# Draft attachments (contract 1.2). The source app checks them fully; Mail refuses the obviously wrong early.
+MAX_FILES = 10
+MAX_FILES_BYTES = 18 * 1024 * 1024
+FILE_NAME_BAD = re.compile(r'[\x00-\x1f\x7f/\\]')
+BASE64 = re.compile(r'[A-Za-z0-9+/=_-]*')
+
+
+def attachments(value):
+    """[{name, mime?, base64}] for mail_draft: plain names, valid base64, at most 10 files and 18 MB together."""
+    if value in (None, []):
+        return []
+    if not isinstance(value, list) or len(value) > MAX_FILES:
+        raise MailError(400, 'too_many_files', f'At most {MAX_FILES} attachments on one email.')
+    out, total = [], 0
+    for item in value:
+        if not isinstance(item, dict):
+            raise MailError(400, 'invalid_arguments', 'Each attachment is {name, mime, base64}.')
+        name = item.get('name')
+        if not isinstance(name, str) or not name.strip() or len(name) > 200 or name.strip() in ('.', '..') or FILE_NAME_BAD.search(name):
+            raise MailError(400, 'invalid_file_name', 'An attachment needs a plain file name (no folders), at most 200 characters.')
+        data = item.get('base64')
+        if not isinstance(data, str) or not data or not BASE64.fullmatch(data):
+            raise MailError(400, 'invalid_file', f'{name.strip()} could not be read. Attach it again.')
+        total += len(data) * 3 // 4
+        if total > MAX_FILES_BYTES:
+            raise MailError(413, 'files_too_big', 'Attachments are too big: at most 18 MB together on one email.')
+        mime = item.get('mime')
+        entry = {'name': name.strip(), 'base64': data}
+        if isinstance(mime, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,127}', mime.strip()):
+            entry['mime'] = mime.strip().lower()
+        out.append(entry)
+    return out
+
+
 def parse_sources(value):
     found = {}
     for item in (value or DEFAULT_SOURCES).split(','):
@@ -96,7 +130,7 @@ class Source:
         self.grants = grants
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def call(self, method, path, body=None, caller=None):
+    def call(self, method, path, body=None, caller=None, timeout=None):
         data = json.dumps(body).encode() if body is not None else None
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         grant = self.grants.token(APPS[self.id]) if caller == OWNER and self.grants else None
@@ -106,7 +140,7 @@ class Source:
             headers['X-Wizard-Agent'] = (caller or agent(None)).split(':', 1)[-1] if caller != OWNER else 'wizard-mail'
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=timeout or self.timeout) as response:
                 raw = response.read(12_000_001)
                 status = response.status
         except urllib.error.HTTPError as error:
@@ -128,8 +162,8 @@ class Source:
                             str(err.get('message') or f'The {NAMES[self.id]} app could not do that.')[:400], source=self.id)
         return value if isinstance(value, dict) else {}
 
-    def tool(self, name, args, caller=None):
-        return self.call('POST', f'/v1/{name}', args, caller)
+    def tool(self, name, args, caller=None, timeout=None):
+        return self.call('POST', f'/v1/{name}', args, caller, timeout)
 
 
 def _service_flags(source, services):
@@ -563,14 +597,32 @@ class Mailbox:
                 if not isinstance(fields[name], str) or len(fields[name]) > limit:
                     raise MailError(400, 'invalid_arguments', f'{name.capitalize()} is too long.')
                 args[name] = fields[name]
-        args.setdefault('body', '')
-        if fields.get('reply_to_id'):
-            if not isinstance(fields['reply_to_id'], str) or not re.fullmatch(r'[A-Za-z0-9=_\-+/.]{1,512}', fields['reply_to_id']):
-                raise MailError(400, 'invalid_arguments', 'Unknown message to reply to.')
-            args['reply_to_id'] = fields['reply_to_id']
-        if not args.get('to') and not args.get('reply_to_id'):
+        for name, what in (('reply_to_id', 'Unknown message to reply to.'), ('draft_id', 'Unknown draft.'),
+                           ('attachments_from', 'Unknown message to forward.')):
+            if fields.get(name):
+                if not isinstance(fields[name], str) or not ID.fullmatch(fields[name]):
+                    raise MailError(400, 'invalid_arguments', what)
+                args[name] = fields[name]
+        if not args.get('draft_id'):
+            args.setdefault('body', '')
+        if not args.get('to') and not args.get('reply_to_id') and not args.get('draft_id'):
             raise MailError(400, 'invalid_arguments', 'Add someone to send it to.')
-        value = source.tool('mail_draft', args, caller)
+        files = attachments(fields.get('attachments'))
+        if files:
+            args['attachments'] = files
+        removing = fields.get('remove_attachments')
+        if removing not in (None, []):
+            if not isinstance(removing, list) or len(removing) > 50 or not all(isinstance(x, str) and 0 < len(x) <= 200 for x in removing):
+                raise MailError(400, 'invalid_arguments', 'remove_attachments must be a list of file names.')
+            args['remove_attachments'] = removing
+        # Files take a while to reach Gmail/Outlook (and through Composio): give the source longer than an ordinary call.
+        big = bool(files) or bool(args.get('draft_id')) or bool(args.get('attachments_from'))
+        value = source.tool('mail_draft', args, caller, timeout=180 if big else None)
+        draft = value.get('draft') if isinstance(value.get('draft'), dict) else {}
+        if (files or args.get('draft_id') or args.get('attachments_from')) and 'attachments' not in draft:
+            # An older source app ignores the files (and would save a second copy instead of changing the draft).
+            raise MailError(409, 'source_too_old', f'Update the {NAMES[source.id]} app to add attachments or edit drafts in place. '
+                            'Nothing was lost.', source=source.id)
         self._changed()
         return value
 

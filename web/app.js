@@ -73,7 +73,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.4.3' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.0' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -589,6 +589,7 @@
     const text = String(msg.body_text || '').split('\n').map(l => '> ' + l).join('\n');
     return `\n\nOn ${when(msg.date, true)}, ${who(msg.from)} wrote:\n${text}`;
   }
+  const MAX_FILES = 10, MAX_BYTES = 18 * 1048576;  // what the Google/Microsoft apps take on one draft
   function compose(opts = {}) {
     const accounts = mailAccounts();
     if (!accounts.length) return connect();
@@ -637,7 +638,59 @@
     if (!cc.length) toggles.append(button('Cc', e => { ccRow.hidden = false; e.target.remove(); ccIn.focus(); }, 'wz-chip'));
     toggles.append(button('Bcc', e => { bccRow.hidden = false; e.target.remove(); bccIn.focus(); }, 'wz-chip'));
     form.append(field('To', toIn), ccRow, bccRow, toggles, field('Subject', subIn), bodyIn);
-    if (opts.mode === 'forward' && msg.attachments && msg.attachments.length) form.append(el('p', 'Attachments are not forwarded yet.', 'muted'));
+    // Attachments: the draft's own files (Draft edit) or the original's (Forward) come along as chips; Attach adds more.
+    // Kept files stay at the source (draft_id / attachments_from); only new files travel as base64.
+    const files = [];
+    const keptFrom = opts.mode === 'draft' ? 'draft' : opts.mode === 'forward' ? 'forward' : null;
+    if (keptFrom) for (const a of msg.attachments || []) if (a && a.name) files.push({ name: a.name, size: a.size || 0, kept: true });
+    if (fromSel && (files.length || (opts.mode === 'draft' && msg.draft_id))) fromSel.disabled = true;  // kept files and the draft live in this account
+    const picker = el('input', null, null, { type: 'file', multiple: '', hidden: '', 'aria-hidden': 'true', tabindex: '-1' });
+    const attachBtn = button('Attach', () => picker.click(), 'wz-chip wm-attach', { 'aria-label': 'Attach files' });
+    attachBtn.prepend(el('span', '📎', null, { 'aria-hidden': 'true' }));
+    const chips = el('ul', null, 'wm-cfiles', { 'aria-label': 'Attachments' });
+    const outlookNote = el('p', 'Outlook accounts take files up to 3 MB each.', 'wm-cnote');
+    const attachRow = el('div', null, 'wm-cattach');
+    attachRow.append(attachBtn, picker, chips);
+    const accountNow = () => (fromSel ? fromSel.value : fromKey);
+    const showNote = () => { outlookNote.hidden = sourceOf(accountNow()) !== 'microsoft'; };
+    if (fromSel) fromSel.addEventListener('change', showNote);
+    showNote();
+    function drawFiles() {
+      chips.replaceChildren(...files.map(f => {
+        const li = el('li', null, 'wz-chip wm-cfile' + (f.reading ? ' wm-reading' : ''));
+        li.append(el('span', f.name, 'wm-cfname'), el('small', f.reading ? 'Reading…' : size(f.size)));
+        li.append(button('✕', () => { files.splice(files.indexOf(f), 1); dirty(); drawFiles(); }, 'wm-cfx', { 'aria-label': `Remove ${f.name}` }));
+        return li;
+      }));
+    }
+    function size(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`; }
+    function addFiles(list) {
+      const picked = Array.from(list || []);
+      if (!picked.length) return;
+      msgLine.textContent = '';
+      const microsoft = sourceOf(accountNow()) === 'microsoft';
+      for (const file of picked) {
+        const total = files.reduce((n, f) => n + (f.size || 0), 0);
+        if (files.length >= MAX_FILES) { msgLine.textContent = `At most ${MAX_FILES} attachments on one email.`; break; }
+        if (microsoft && file.size > 3 * 1048576) { msgLine.textContent = `${file.name} is over 3 MB: Outlook accounts take files up to 3 MB each for now.`; continue; }
+        if (total + file.size > MAX_BYTES) { msgLine.textContent = `${file.name} doesn't fit: attachments can be 18 MB together.`; continue; }
+        const f = { name: file.name || 'file', mime: file.type || '', size: file.size, reading: true };
+        files.push(f);
+        f.ready = new Promise(done => {
+          const r = new FileReader();
+          r.onload = () => { const url = String(r.result || ''); f.base64 = url.slice(url.indexOf(',') + 1); f.reading = false; drawFiles(); done(); };
+          r.onerror = () => { files.splice(files.indexOf(f), 1); msgLine.textContent = `${f.name} could not be read. Try again.`; drawFiles(); done(); };
+          r.readAsDataURL(file);
+        });
+      }
+      dirty();
+      drawFiles();
+    }
+    picker.addEventListener('change', () => { addFiles(picker.files); picker.value = ''; });
+    form.addEventListener('dragover', e => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
+    form.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) { e.preventDefault(); addFiles(e.dataTransfer.files); } });
+    drawFiles();
+    form.append(attachRow, outlookNote);
     const msgLine = el('p', '', 'wm-cmsg', { role: 'alert' });
     const send = el('button', 'Send', 'wz-button', { type: 'submit' });
     const save = button('Save draft', () => submit(false), 'wz-button secondary');
@@ -654,19 +707,32 @@
       if (bad.length) { msgLine.textContent = `Check this address: ${bad[0]}`; return; }
       if (!t.out.length && !replyTo) { msgLine.textContent = 'Add someone to send it to.'; toIn.focus(); return; }
       const account = fromSel ? fromSel.value : fromKey;
-      send.disabled = save.disabled = true;
-      msgLine.textContent = andSend ? 'Sending…' : 'Saving…';
+      send.disabled = save.disabled = attachBtn.disabled = true;
+      const fresh = files.filter(f => !f.kept);
+      msgLine.textContent = (andSend ? 'Sending…' : 'Saving…') + (fresh.length ? ` (${fresh.length === 1 ? '1 file' : fresh.length + ' files'})` : '');
       try {
-        const draft = await api('api/draft', { account, to: t.out, cc: c.out, bcc: b.out, subject: subIn.value, body: bodyIn.value, reply_to_id: replyTo });
+        await Promise.all(fresh.map(f => f.ready));
+        const payload = { account, to: t.out, cc: c.out, bcc: b.out, subject: subIn.value, body: bodyIn.value, reply_to_id: replyTo };
+        const live = files.filter(f => !f.kept && f.base64 != null);
+        if (live.length) payload.attachments = live.map(f => ({ name: f.name, mime: f.mime || undefined, base64: f.base64 }));
+        const keptNames = new Set(files.filter(f => f.kept).map(f => f.name));
+        const dropped = (msg.attachments || []).map(a => a && a.name).filter(n => n && !keptNames.has(n));
+        // Draft edit: change the same draft in place (its files stay at the source). An older source without draft ids:
+        // save a new draft that copies the old one's files, then trash the old one.
+        const inPlace = opts.mode === 'draft' && msg.draft_id && account === fromKey;
+        if (inPlace) { payload.draft_id = msg.draft_id; if (!b.out.length) delete payload.bcc; }  // Bcc isn't shown on a draft: keep the old one
+        else if (keptFrom && keptNames.size && account === fromKey) payload.attachments_from = msg.id;
+        if ((inPlace || payload.attachments_from) && dropped.length) payload.remove_attachments = dropped;
+        const draft = await api('api/draft', payload);
         if (andSend) await api('api/send', { account, draft_id: draft.draft.id });
-        if (opts.mode === 'draft' && msg.id) api('api/update', { account: fromKey, id: msg.id, trashed: true }).catch(() => {});
+        if (opts.mode === 'draft' && msg.id && !inPlace) api('api/update', { account: fromKey, id: msg.id, trashed: true }).catch(() => {});
         release();
         closeSheet();
         say(andSend ? 'Sent.' : 'Saved in Drafts.');
         if (state.folder === 'drafts' || state.folder === 'sent') load(true);
       } catch (err) {
         msgLine.textContent = err.message;
-        send.disabled = save.disabled = false;
+        send.disabled = save.disabled = attachBtn.disabled = false;
       }
     }
     openSheet(title, form);
