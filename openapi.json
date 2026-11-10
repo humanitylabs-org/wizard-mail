@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Wizard Mail",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Owner API behind the Mail page (owner login, same origin). Mail holds no sign-ins: it asks the Google and Microsoft apps (wizard.mail-calendar/1)."
  },
  "paths": {
@@ -414,6 +414,10 @@
          "q": {
           "type": "string",
           "description": "Only messages matching this search."
+         },
+         "background": {
+          "type": "boolean",
+          "description": "Answer at once (202) with a job to poll at GET /api/mark-all-read?job=<id>; the button uses it to show progress."
          }
         }
        }
@@ -423,6 +427,42 @@
     "responses": {
      "200": {
       "description": "{read: true, count, changed: [{account, id}], failed: [{account, id, code}], more, errors}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     },
+     "202": {
+      "description": "{id, state: running, phase: finding|marking, done, total}"
+     }
+    }
+   },
+   "get": {
+    "summary": "Progress of a background Mark all as read.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mail"
+       ]
+      },
+      "description": "Owner page marker; refuses cross-site use."
+     },
+     {
+      "name": "job",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{id, state: running|done|failed, phase, done, total, result? (as the 200 of POST), error?}"
      },
      "4XX": {
       "description": "{error:{code,message}}"

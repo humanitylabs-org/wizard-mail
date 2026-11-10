@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,9 @@ class FakeSource:
         self.sid, self.accounts, self.calls, self.drafts, self.sent, self.flags = sid, accounts, [], {}, [], {}
         self.fail = None
         self.old_contract = False  # True: a source app from before contract 1.2 (no draft attachments)
+        self.bulk = False   # True: lists mail_update_bulk (contract 1.3: ids-only search + one batchModify per 1000 ids)
+        self.bulk_404 = False  # True: lists it but answers 404 (an odd, older source)
+        self.flood = None   # a list of unread ids: a flooded inbox (searches page through it)
         self.grant = f'grant-for-wizard-mail-at-{sid}'  # what the App Manager gave Mail for this source
         source = self
 
@@ -43,7 +47,10 @@ class FakeSource:
             def do_GET(self):
                 assert not self.headers.get('Origin') and not self.headers.get('Cookie')
                 source.calls.append(('GET', self.path, None, self.headers.get('X-Wizard-Agent')))
-                self.reply(200, {'accounts': source.accounts})
+                status = {'accounts': source.accounts}
+                if source.bulk:
+                    status['mail_calendar'] = {'contract': 'wizard.mail-calendar/1', 'tools': ['mail_get', 'mail_search', 'mail_update', 'mail_update_bulk']}
+                self.reply(200, status)
 
             def do_POST(self):
                 assert not self.headers.get('Origin') and not self.headers.get('Cookie')
@@ -54,6 +61,8 @@ class FakeSource:
                 if source.fail:
                     return self.reply(*source.fail)
                 # Like the real sources (agent_access.py): only Mail's grant may send.
+                if tool == 'mail_update_bulk' and (source.bulk_404 or not source.bulk):
+                    return self.reply(404, {'error': {'code': 'not_found', 'message': 'Not found.'}})
                 if tool == 'mail_send' and self.headers.get('X-Wizard-Grant') != source.grant:
                     return self.reply(403, {'error': {'code': 'agent_send_refused', 'message': 'Agents can\'t send mail.'}})
                 self.reply(200, source.tool(tool, body))
@@ -65,6 +74,25 @@ class FakeSource:
 
     def tool(self, name, a):
         acct = a['account']
+        if name == 'mail_search' and self.flood is not None:
+            left = [mid for mid in self.flood if not self.flags.get(mid, {}).get('read')] if a.get('unread_only') else list(self.flood)
+            start = int(a.get('page_token') or 0)
+            limit = a['max']
+            if a.get('ids_only') and self.bulk:
+                assert limit <= 500
+                page = left[start:start + limit]
+                nxt = str(start + limit) if start + limit < len(left) else None
+                return {'folder': a.get('folder'), 'ids': page, 'next_page_token': nxt}
+            assert limit <= 25
+            page = left[start:start + limit]
+            nxt = str(start + limit) if start + limit < len(left) else None
+            return {'folder': a.get('folder'), 'messages': [{'id': mid, 'unread': True, 'date': '2026-11-03T00:00:00+00:00'} for mid in page],
+                    'next_page_token': nxt}
+        if name == 'mail_update_bulk':
+            assert 1 <= len(a['ids']) <= 1000 and set(a) == {'account', 'ids', 'read'}
+            for mid in a['ids']:
+                self.flags[mid] = {'read': a['read']}
+            return {'updated': True, 'count': len(a['ids']), 'ids': a['ids'], 'unread': not a['read']}
         if name == 'mail_search':
             n = 2 if not a.get('page_token') else 1
             day = '03' if self.sid == 'google' else '02'
@@ -316,6 +344,91 @@ class MailboxTests(Base):
         self.assertEqual(caught.exception.code, 'not_connected')
 
 
+class BulkMarkTests(Base):
+    """Mark all as read on a flooded inbox (issue 13): bulk ids + batch modify where the source offers them."""
+
+    def setUp(self):
+        super().setUp()
+        self.g.flood = [f'f{i:04d}' for i in range(1200)]
+
+    def tools(self, src, name):
+        return [c[2] for c in src.calls if c[1] == name]
+
+    def test_bulk_source_marks_500_in_a_few_calls_and_undo_is_one_call(self):
+        self.g.bulk = True
+        seen = []
+        v = self.box.mark_all_read('google:me@gmail.com', 'inbox', '', sources.OWNER, progress=lambda *p: seen.append(p))
+        self.assertEqual((v['count'], v['failed'], v['more']), (500, [], True))
+        searches = self.tools(self.g, 'mail_search')
+        self.assertEqual(len(searches), 1)  # one ids-only page of 500, no per-message metadata
+        self.assertTrue(all(s['ids_only'] is True and s['max'] == 500 and s['unread_only'] is True for s in searches))
+        bulk = self.tools(self.g, 'mail_update_bulk')
+        self.assertEqual(len(bulk), 1)
+        self.assertEqual((len(bulk[0]['ids']), bulk[0]['read']), (500, True))
+        self.assertEqual(self.tools(self.g, 'mail_update'), [])
+        posts = [c for c in self.g.calls if c[0] == 'POST']
+        self.assertEqual(len(posts), 2)  # was ~520 (20 searches + 500 updates) before
+        self.assertEqual(seen[-1], ('marking', 500, 500))
+        self.assertIn(('marking', 0, 500), seen)
+        # Undo: one bulk call back to unread.
+        u = self.box.set_read(v['changed'], False, sources.OWNER)
+        self.assertEqual((u['count'], u['read']), (500, False))
+        bulk = self.tools(self.g, 'mail_update_bulk')
+        self.assertEqual((len(bulk), bulk[-1]['read'], len(bulk[-1]['ids'])), (2, False, 500))
+        self.assertEqual(self.tools(self.g, 'mail_update'), [])
+
+    def test_bulk_chunks_by_1000_ids(self):
+        self.g.bulk = True
+        v = self.box.mark_all_read('google:me@gmail.com', 'inbox', '', sources.OWNER, cap=1200)
+        self.assertEqual((v['count'], v['more']), (1200, False))
+        self.assertEqual([len(b['ids']) for b in self.tools(self.g, 'mail_update_bulk')], [1000, 200])
+        self.assertEqual(len(self.tools(self.g, 'mail_search')), 3)
+
+    def test_source_without_bulk_tools_keeps_the_per_message_path(self):
+        seen = []
+        v = self.box.mark_all_read('google:me@gmail.com', 'inbox', '', sources.OWNER, progress=lambda *p: seen.append(p))
+        self.assertEqual((v['count'], v['more']), (500, True))
+        self.assertEqual(len(self.tools(self.g, 'mail_update')), 500)
+        self.assertTrue(all('ids_only' not in s and s['max'] == 25 for s in self.tools(self.g, 'mail_search')))
+        self.assertEqual(self.tools(self.g, 'mail_update_bulk'), [])
+        marking = [p for p in seen if p[0] == 'marking']
+        self.assertEqual(marking[-1], ('marking', 500, 500))
+        self.assertGreater(len(marking), 10)  # the button counts up message by message
+
+    def test_bulk_404_falls_back_per_message(self):
+        self.g.bulk, self.g.bulk_404 = True, True
+        v = self.box.mark_all_read('google:me@gmail.com', 'inbox', '', sources.OWNER)
+        self.assertEqual((v['count'], v['failed']), (500, []))
+        self.assertEqual(len(self.tools(self.g, 'mail_update_bulk')), 1)
+        self.assertEqual(len(self.tools(self.g, 'mail_update')), 500)
+
+    def test_bulk_refusal_is_reported_not_retried(self):
+        self.g.bulk = True
+        self.box.accounts()
+        self.g.fail = (403, {'error': {'code': 'agent_access_denied', 'message': 'Read-only.'}})
+        with self.assertRaises(sources.MailError):
+            self.box.set_read([{'account': 'google:me@gmail.com', 'id': 'f0001'}], True, 'agent:helper')
+        self.assertEqual(self.tools(self.g, 'mail_update'), [])
+
+    def test_background_job_reports_progress_then_the_result(self):
+        self.g.bulk = True
+        job = self.box.start_mark_all_read('google:me@gmail.com', 'inbox', '', sources.OWNER)
+        self.assertEqual(job['state'], 'running')
+        for _ in range(200):
+            job = self.box.mark_job(job['id'], sources.OWNER)
+            if job['state'] != 'running':
+                break
+            time.sleep(0.02)
+        self.assertEqual((job['state'], job['done'], job['total'], job['result']['count']), ('done', 500, 500, 500))
+        with self.assertRaises(sources.MailError):
+            self.box.mark_job(job['id'], 'agent:main')  # only whoever started it
+        with self.assertRaises(sources.MailError):
+            self.box.mark_job('nope', sources.OWNER)
+        for bad in (('google:me@gmail.com', 'spam', ''), ('yahoo:me@yahoo.com', 'inbox', ''), ('all', 'inbox', 'x' * 301)):
+            with self.assertRaises(sources.MailError):
+                self.box.start_mark_all_read(*bad)
+
+
 class HttpTests(Base):
     HOST = 'box.tail.ts.net:8444'
 
@@ -450,6 +563,19 @@ class HttpTests(Base):
         status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'all', 'folder': 'inbox'})
         self.assertEqual((status, v['count']), (200, 0))
         self.assertEqual(len([c for src in (self.g, self.m) for c in src.calls if c[1] == 'mail_update']), n)
+
+    def test_mark_all_read_in_the_background_with_progress(self):
+        status, job, _ = self.req('POST', '/api/mark-all-read', {'account': 'all', 'folder': 'inbox', 'background': True})
+        self.assertEqual(status, 202, job)
+        for _ in range(200):
+            status, job, _ = self.req('GET', '/api/mark-all-read?job=' + job['id'])
+            self.assertEqual(status, 200, job)
+            if job['state'] != 'running':
+                break
+            time.sleep(0.02)
+        self.assertEqual((job['state'], job['phase'], job['total'], job['result']['count']), ('done', 'marking', 4, 4))
+        self.assertEqual(self.req('GET', '/api/mark-all-read?job=unknown')[0], 404)
+        self.assertEqual(self.req('POST', '/api/mark-all-read', {'folder': 'spam', 'background': True})[0], 400)
 
     def test_mark_all_read_keeps_to_the_shown_scope_and_search(self):
         status, v, _ = self.req('POST', '/api/mark-all-read', {'account': 'google:me@gmail.com', 'folder': 'archive', 'q': 'from:anna'})

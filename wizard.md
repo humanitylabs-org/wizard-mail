@@ -4,7 +4,7 @@ id: wizard-mail
 name: Mail
 type: service
 category: app
-version: 0.5.0
+version: 0.5.1
 icon: icon.png
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
 tags: [communication, productivity]

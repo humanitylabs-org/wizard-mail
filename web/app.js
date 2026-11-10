@@ -73,7 +73,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.0' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.1' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -538,7 +538,7 @@
     for (const m of before) { m.unread = false; unreadLocal(m, false); }
     renderList();
     try {
-      const v = await api('api/mark-all-read', scope);
+      const v = await markAllRun(scope, btn);
       const n = v.count || 0;
       const left = (v.failed || []).length;
       const changed = v.changed || [];
@@ -560,6 +560,26 @@
       btn.removeAttribute('aria-busy');
       btn.textContent = 'Mark all as read';
     }
+  }
+  // Runs in the background at Mail; the button says how far it got ("Marking 120 of 500…") so it never looks frozen.
+  async function markAllRun(scope, btn) {
+    let job = await api('api/mark-all-read', { ...scope, background: true });
+    if (!job || !job.id) return job;   // answered at once
+    for (;;) {
+      if (job.state === 'done') return job.result || {};
+      if (job.state === 'failed') {
+        const e = new Error((job.error && job.error.message) || 'Mail could not do that.');
+        e.code = job.error && job.error.code; throw e;
+      }
+      btn.textContent = markLabel(job);
+      await new Promise(r => setTimeout(r, 400));
+      job = await api('api/mark-all-read?job=' + encodeURIComponent(job.id));
+    }
+  }
+  function markLabel(job) {
+    if (job.phase === 'marking' && job.total) return `Marking ${job.done || 0} of ${job.total}…`;
+    if (job.done) return `Finding unread… ${job.done}`;
+    return 'Marking…';
   }
   async function undoMarkAll(changed) {
     try {
