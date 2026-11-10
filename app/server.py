@@ -23,7 +23,7 @@ from sources import MailError, OWNER  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.5.1'
+VERSION = '0.5.2'
 ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
@@ -314,6 +314,9 @@ def handler_for(app):
                         return self.send_json(200, box.list(query.get('account') or 'all', query.get('folder') or 'inbox',
                                                             query.get('q') or '', query.get('cursor') or None, caller=OWNER,
                                                             unread=query.get('unread') == '1'))
+                    if path == '/api/drafts':
+                        # Drafts waiting to be sent: the Drafts count and the strip on top of the Inbox.
+                        return self.send_json(200, box.drafts(query.get('account') or 'all', OWNER))
                     if path == '/api/mark-all-read':
                         return self.send_json(200, box.mark_job(query.get('job'), OWNER))
                     if path == '/api/message':

@@ -334,3 +334,33 @@ html[data-presentation="immersive"] .wm-bbar, html[data-presentation="immersive"
   .wz-chip.wm-attach, .wz-chip.wm-cfile { min-height: 44px; }
   .wm-cfx { min-width: 44px; min-height: 44px; }
 }
+
+/* Drafts waiting for you (issue 11): a count on Drafts and a strip on top of the Inbox, like other mail apps. */
+.wm-dcount { margin-left: 6px; font-size: .75rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--wz-text-secondary); }
+.wm-navitem .wm-dcount { margin-left: auto; }
+.wm-fchip[aria-selected="true"] .wm-dcount { color: inherit; opacity: .85; }
+.wm-drafts { margin: 0 var(--pad) var(--wz-space-2, 8px); border-radius: var(--wz-radius, 12px); overflow: hidden;
+  background: color-mix(in srgb, var(--wz-accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--wz-accent) 28%, transparent); }
+.wm-dhead { display: flex; align-items: center; gap: var(--wz-space-2, 8px); width: 100%; min-height: 44px; padding: 6px var(--pad);
+  background: none; border: 0; color: var(--wz-text); font: inherit; text-align: left; cursor: pointer; }
+.wm-dhead:hover, .wm-drow:hover, .wm-dmore:hover { background: color-mix(in srgb, var(--wz-accent) 8%, transparent); }
+.wm-dhead b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wm-dicon { color: var(--wz-accent); }
+.wm-dby { color: var(--wz-text-muted); font-size: .75rem; white-space: nowrap; }
+.wm-dgo { color: var(--wz-accent); font-size: .8125rem; white-space: nowrap; }
+.wm-drows { display: flex; flex-direction: column; border-top: 1px solid color-mix(in srgb, var(--wz-accent) 20%, transparent); }
+.wm-drow { display: flex; width: 100%; min-height: 44px; padding: 6px var(--pad); background: none; border: 0; color: var(--wz-text);
+  font: inherit; text-align: left; cursor: pointer; }
+.wm-drow + .wm-drow { border-top: 1px solid color-mix(in srgb, var(--wz-text) 8%, transparent); }
+.wm-dmain { display: grid; gap: 2px; width: 100%; min-width: 0; }
+.wm-dline { display: flex; align-items: baseline; gap: var(--wz-space-2, 8px); min-width: 0; }
+.wm-dto { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wm-dline .wm-when { flex: none; }
+.wm-dsub { display: flex; align-items: baseline; gap: var(--wz-space-2, 8px); min-width: 0; }
+.wm-dsubj { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wm-dacct { flex: 0 1 auto; color: var(--wz-text-muted); font-size: .75rem; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wz-chip.wm-dtag { flex: none; min-height: 0; padding: 0 8px; font-size: .6875rem; line-height: 1.5rem; }
+.wm-dmore { width: 100%; min-height: 40px; background: none; border: 0; border-top: 1px solid color-mix(in srgb, var(--wz-text) 8%, transparent);
+  color: var(--wz-accent); font: inherit; font-size: .8125rem; cursor: pointer; }
+/* A phone keeps the strip short so the inbox stays in view: the newest two drafts. */
+@media (max-width: 599px) { .wm-drow:nth-child(n+3) { display: none; } .wm-dby { display: none; } }

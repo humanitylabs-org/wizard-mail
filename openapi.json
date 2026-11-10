@@ -53,6 +53,29 @@
     }
    }
   },
+  "/api/drafts": {
+   "get": {
+    "summary": "Drafts waiting to be sent (the Drafts folder, newest 20) for the Drafts count and the \"Drafts waiting for you\" strip on top of the Inbox. agent = the agent that wrote it through Mail's MCP since Mail started, else null. Owner only.",
+    "parameters": [
+     {
+      "name": "account",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "all (default) or one account key."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{drafts: [{account, account_email, source, id, draft_id, to, subject, date, agent}], count, more, errors}"
+     },
+     "4XX": {
+      "description": "{error:{code,message}}"
+     }
+    }
+   }
+  },
   "/api/messages": {
    "get": {
     "summary": "Newest first, across all accounts or one.",

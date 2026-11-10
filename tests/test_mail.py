@@ -93,6 +93,12 @@ class FakeSource:
             for mid in a['ids']:
                 self.flags[mid] = {'read': a['read']}
             return {'updated': True, 'count': len(a['ids']), 'ids': a['ids'], 'unread': not a['read']}
+        if name == 'mail_search' and a.get('folder') == 'drafts':
+            # Like Gmail: the Drafts folder lists each draft's message id, newest first (draft id only on mail_get).
+            rows = [{'id': f'msg-{did}', 'thread_id': 't', 'from': {'name': '', 'email': acct}, 'to': [{'name': '', 'email': x} for x in d.get('to', [])],
+                     'cc': [], 'subject': d.get('subject', ''), 'date': f'2026-11-07T{10 + i:02d}:00:00+00:00', 'snippet': '', 'unread': False, 'labels': ['DRAFT']}
+                    for i, (did, d) in enumerate(self.drafts.items()) if d.get('account') == acct]
+            return {'contract': 'wizard.mail-calendar/1', 'folder': 'drafts', 'messages': rows[::-1], 'next_page_token': None, 'account': acct}
         if name == 'mail_search':
             n = 2 if not a.get('page_token') else 1
             day = '03' if self.sid == 'google' else '02'
@@ -125,7 +131,7 @@ class FakeSource:
             else:
                 did = f'd{len(self.drafts) + 1}'
                 self.drafts[did] = {**a, 'files': files}
-            view = {'id': did, 'to': self.drafts[did].get('to', []), 'subject': self.drafts[did].get('subject', '')}
+            view = {'id': did, 'message_id': f'msg-{did}', 'to': self.drafts[did].get('to', []), 'subject': self.drafts[did].get('subject', '')}
             if not self.old_contract:
                 view['attachments'] = self.drafts[did]['files']
             return {'draft': view, 'sent': False, 'updated': bool(a.get('draft_id'))}
@@ -638,6 +644,39 @@ class HttpTests(Base):
         conn.close()
         self.assertEqual((r.status, v['error']['code']), (413, 'files_too_big'))
         self.assertIn('18 MB', v['error']['message'])
+
+    def test_drafts_waiting_show_count_recipient_subject_account_and_who_wrote_them(self):
+        # Issue 11: an agent drafts with mail_draft; opening Mail must point to it (Drafts count + strip on the Inbox).
+        status, v, _ = self.req('GET', '/api/drafts?account=all')
+        self.assertEqual((status, v['count'], v['drafts']), (200, 0, []))
+        call = lambda args: self.req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                                                      'params': {'name': 'mail_draft', 'arguments': args}},
+                                     headers={'Host': f'127.0.0.1:{self.port}'}, owner=False)[1]['result']
+        self.assertFalse(call({'account': 'google:me@gmail.com', 'to': ['jay@example.com'], 'subject': 'PCS Genie: Transition plan',
+                               'body': 'Hi Jay'})['isError'])
+        # The owner's own draft counts too (it is waiting as well), just without the agent mark.
+        self.assertEqual(self.req('POST', '/api/draft', {'account': 'microsoft:me@outlook.com', 'to': ['a@example.com'], 'subject': 'Mine',
+                                                         'body': 'x'})[0], 200)
+        status, v, _ = self.req('GET', '/api/drafts?account=all')
+        self.assertEqual((status, v['count'], v['more']), (200, 2, False))
+        by_subject = {d['subject']: d for d in v['drafts']}
+        agent = by_subject['PCS Genie: Transition plan']
+        self.assertEqual((agent['account'], agent['account_email'], agent['agent']), ('google:me@gmail.com', 'me@gmail.com', 'main'))
+        self.assertEqual([p['email'] for p in agent['to']], ['jay@example.com'])
+        self.assertEqual(agent['id'], 'msg-d1')  # opens like any row of the Drafts folder
+        self.assertIsNone(by_subject['Mine']['agent'])
+        # The account picked at the top narrows it, like the list.
+        status, v, _ = self.req('GET', '/api/drafts?account=microsoft:me@outlook.com')
+        self.assertEqual([d['subject'] for d in v['drafts']], ['Mine'])
+        # Owner only, like the rest of the API; agents never reach it.
+        self.assertEqual(self.req('GET', '/api/drafts', owner=False)[0], 401)
+        self.assertEqual(self.req('GET', '/api/drafts', headers={'X-Wizard-Request': None})[0], 403)
+        # The page has the count and the strip.
+        status, js, _ = self.req('GET', '/app.js', owner=False)
+        self.assertIn("api('api/drafts?'", js)
+        self.assertIn('waiting for you', js)
+        status, page, _ = self.req('GET', '/', owner=False)
+        self.assertIn('wm-drafts', page)
 
     def test_mcp_draft_schema_offers_files(self):
         msg = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}

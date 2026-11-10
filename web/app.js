@@ -73,7 +73,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.1' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.2' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -163,6 +163,7 @@
       const on = state.folder === id && !(id === 'inbox' && state.unread);
       const b = button('', () => pickFolder(id, false), 'wm-navitem' + (on ? ' on' : ''), { 'data-folder': id });
       b.append(el('span', label, 'wm-grow'));
+      if (id === 'drafts') b.append(el('span', '', 'wm-dcount'));
       if (id !== 'inbox') return [b];
       b.append(el('span', '', 'wm-count'));
       const sub = button('', () => pickFolder('inbox', true), 'wm-navitem wm-navsub' + (state.folder === 'inbox' && state.unread ? ' on' : ''));
@@ -172,6 +173,7 @@
     $('.wm-folders').replaceChildren(...FOLDERS.map(([id, label]) => {
       const c = button(label, () => pickFolder(id), 'wz-chip wm-fchip', { role: 'tab', 'aria-selected': String(state.folder === id), 'data-folder': id });
       if (id === 'inbox') c.append(el('span', '', 'wm-count'));
+      if (id === 'drafts') c.append(el('span', '', 'wm-dcount'));
       return c;
     }));
     if (!$('.wm-unreadf .wm-count')) $('.wm-unreadf').append(el('span', '', 'wm-count'));
@@ -199,6 +201,62 @@
     const label = text ? `, ${text} unread` : '';
     for (const b of document.querySelectorAll('[data-folder="inbox"]')) b.setAttribute('aria-label', 'Inbox' + label);
     $('.wm-unreadf').setAttribute('aria-label', 'Unread' + (text ? `, ${text}` : ''));
+    const d = draftCount();
+    for (const c of document.querySelectorAll('.wm-dcount')) { c.textContent = d; c.hidden = !d; }
+    for (const b of document.querySelectorAll('[data-folder="drafts"]')) b.setAttribute('aria-label', 'Drafts' + (d ? `, ${d} waiting` : ''));
+    renderDrafts();
+  }
+  // ---------- drafts waiting (issue 11) ----------
+  // Drafts the agent (or he) saved are waiting to be sent: a count on Drafts, like every mail app, and on top of the
+  // Inbox a small "Drafts waiting for you" strip with who each goes to, its subject and account. One tap opens it.
+  let drafts = { drafts: [], count: 0, more: false }, draftsFor = '';
+  function draftCount() { return drafts.count ? (drafts.more ? `${drafts.count}+` : String(drafts.count)) : ''; }
+  async function loadDrafts() {
+    if (!mailAccounts().length) return;
+    const scope = state.scope;
+    try {
+      const v = await api('api/drafts?' + new URLSearchParams({ account: scope }));
+      if (scope !== state.scope) return;
+      drafts = v; draftsFor = scope;
+      showCounts();
+    } catch (_) {}
+  }
+  function openDraft(d) {
+    pickFolder('drafts');
+    openMessage({ id: d.id, account: d.account, account_email: d.account_email, to: d.to, subject: d.subject, date: d.date });
+  }
+  function renderDrafts() {
+    const strip = $('.wm-drafts');
+    if (!strip) return;
+    const list = draftsFor === state.scope ? drafts.drafts || [] : [];
+    const show = state.folder === 'inbox' && !state.q && list.length > 0 && mailAccounts().length > 0;
+    strip.hidden = !show;
+    if (!show) { strip.replaceChildren(); return; }
+    const n = draftCount();
+    const byAgent = list.filter(d => d.agent).length;
+    const head = button('', () => pickFolder('drafts'), 'wm-dhead');
+    head.append(el('span', '✎', 'wm-dicon', { 'aria-hidden': 'true' }),
+      el('b', `${n} ${list.length === 1 && !drafts.more ? 'draft' : 'drafts'} waiting for you`, 'wm-grow'),
+      el('span', byAgent ? (byAgent === list.length ? 'from your agent' : `${byAgent} from your agent`) : '', 'wm-dby'),
+      el('span', 'Drafts ›', 'wm-dgo'));
+    const rows = el('div', null, 'wm-drows');
+    const many = mailAccounts().length > 1;
+    for (const d of list.slice(0, 3)) {
+      const r = button('', () => openDraft(d), 'wm-drow');
+      const to = (d.to || []).map(who).filter(Boolean);
+      const line = el('span', null, 'wm-dline');
+      line.append(el('b', to.length ? 'To ' + to.join(', ') : '(no recipient)', 'wm-dto'), el('time', when(d.date), 'wm-when', { datetime: d.date || '' }));
+      const sub = el('span', null, 'wm-dsub');
+      sub.append(el('span', d.subject || '(no subject)', 'wm-dsubj'));
+      if (many || state.scope === 'all') sub.append(el('small', d.account_email || '', 'wm-dacct'));
+      if (d.agent) sub.append(el('small', d.agent === 'main' ? 'by your agent' : `by ${d.agent}`, 'wz-chip wm-dtag'));
+      const main = el('span', null, 'wm-dmain');
+      main.append(line, sub);
+      r.append(main);
+      rows.append(r);
+    }
+    if (list.length > 3) rows.append(button(`See all ${n}`, () => pickFolder('drafts'), 'wm-dmore'));
+    strip.replaceChildren(head, rows);
   }
   function unreadOnly() { return state.unread && UNREADABLE.has(state.folder); }
   function toggleUnread() { state.unread = !state.unread; renderSide(); load(true); }
@@ -243,6 +301,7 @@
     if (state.q) qs.set('q', state.q);
     if (unreadOnly()) qs.set('unread', '1');
     if (!fresh && state.cursor) qs.set('cursor', state.cursor);
+    if (fresh) loadDrafts();
     try {
       const v = await api('api/messages?' + qs);
       if (mine !== state.loading) return;
@@ -483,6 +542,7 @@
       const out = await api('api/update', { account: m.account, id: m.id, ...flags });
       const id = out.id || m.id;
       readOne(m);
+      if (state.folder === 'drafts') loadDrafts();
       say(done, async () => {
         try {
           await api('api/update', { account: m.account, id, ...undoFlags });
@@ -749,7 +809,7 @@
         release();
         closeSheet();
         say(andSend ? 'Sent.' : 'Saved in Drafts.');
-        if (state.folder === 'drafts' || state.folder === 'sent') load(true);
+        if (state.folder === 'drafts' || state.folder === 'sent') load(true); else loadDrafts();
       } catch (err) {
         msgLine.textContent = err.message;
         send.disabled = save.disabled = attachBtn.disabled = false;
