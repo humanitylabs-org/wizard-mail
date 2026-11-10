@@ -30,6 +30,7 @@ MAX_PAGE = 20
 MARK_MAX = 500   # Mark all as read changes at most this many messages per tap (more: tap again)
 IDS_PAGE = 500   # contract 1.3: mail_search ids_only lists up to 500 ids per page, without fetching each message
 BULK_MAX = 1000  # contract 1.3: mail_update_bulk changes up to 1000 ids in one call (Gmail batchModify)
+DRAFTS_REMEMBERED = 500  # agent-written draft ids kept in memory (oldest dropped first)
 CAPS_TTL = 300   # how long a source's tool list (from /v1/status) is trusted
 ID = re.compile(r'[A-Za-z0-9=_\-+/.]{1,512}')
 EMAIL = re.compile(r'^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$')
@@ -249,6 +250,9 @@ class Mailbox:
         self.unread_snap, self.unread_job, self.unread_dirty, self.unread_gen = None, None, False, 0
         self.caps = {}   # source id -> (until, offers mail_update_bulk + mail_search ids_only)
         self.jobs = {}   # Mark all as read in the background: job id -> progress (the button shows it)
+        # Drafts an agent wrote through Mail's MCP since Mail started: (account key, draft or message id) -> agent name.
+        # Mail keeps no data, so after a restart these drafts still show as waiting, just without "by your agent".
+        self.agent_drafts = {}
 
     # ---------- accounts ----------
     def _status(self, source, caller=None):
@@ -750,8 +754,38 @@ class Mailbox:
             # An older source app ignores the files (and would save a second copy instead of changing the draft).
             raise MailError(409, 'source_too_old', f'Update the {NAMES[source.id]} app to add attachments or edit drafts in place. '
                             'Nothing was lost.', source=source.id)
+        if caller != OWNER and isinstance(caller, str) and caller.startswith('agent:'):
+            self._remember_agent_draft(key, draft, caller.split(':', 1)[1])
         self._changed()
         return value
+
+    def _remember_agent_draft(self, key, draft, name):
+        ids = [str(draft.get(k)) for k in ('id', 'message_id') if isinstance(draft.get(k), (str, int)) and str(draft.get(k))]
+        with self.lock:
+            for i in ids:
+                self.agent_drafts[(key, i)] = name
+            while len(self.agent_drafts) > DRAFTS_REMEMBERED:
+                self.agent_drafts.pop(next(iter(self.agent_drafts)))
+
+    def drafts(self, key='all', caller=OWNER):
+        """Drafts waiting to be sent (the Drafts folder, newest first, one page) for the Drafts count and the
+        "Drafts waiting for you" strip on top of the Inbox. Each says who it goes to, its subject and account,
+        and whether an agent wrote it here. Same request as the Drafts folder's first page, so it shares its cache."""
+        try:
+            page = self.list(key or 'all', 'drafts', '', None, MAX_PAGE, caller)
+        except MailError as error:
+            if error.code == 'not_connected':
+                return {'drafts': [], 'count': 0, 'more': False, 'errors': []}
+            raise
+        with self.lock:
+            known = dict(self.agent_drafts)
+        out = []
+        for m in page['messages']:
+            agent_name = next((known[(m['account'], str(i))] for i in (m.get('draft_id'), m.get('id')) if i and (m['account'], str(i)) in known), None)
+            out.append({'account': m['account'], 'account_email': m.get('account_email'), 'source': m.get('source'), 'id': m['id'],
+                        'draft_id': m.get('draft_id'), 'to': m.get('to') or [], 'subject': m.get('subject') or '', 'date': m.get('date'),
+                        'agent': agent_name})
+        return {'drafts': out, 'count': len(out), 'more': bool(page.get('cursor')), 'errors': page.get('errors') or []}
 
     def send(self, key, draft_id, caller=OWNER):
         """Owner only (the Send button). Never offered to agents by this app, and the source refuses agents anyway."""
