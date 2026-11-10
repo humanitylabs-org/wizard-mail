@@ -5,6 +5,7 @@ in either app) and merges the answers into one inbox. Message text is other peop
 """
 import base64
 import hashlib
+import secrets
 import json
 import os
 import re
@@ -27,6 +28,9 @@ INBOX_MAX = 50   # the Wizard inbox feed / badge list the newest unread mail, at
 INBOX_TTL = 60
 MAX_PAGE = 20
 MARK_MAX = 500   # Mark all as read changes at most this many messages per tap (more: tap again)
+IDS_PAGE = 500   # contract 1.3: mail_search ids_only lists up to 500 ids per page, without fetching each message
+BULK_MAX = 1000  # contract 1.3: mail_update_bulk changes up to 1000 ids in one call (Gmail batchModify)
+CAPS_TTL = 300   # how long a source's tool list (from /v1/status) is trusted
 ID = re.compile(r'[A-Za-z0-9=_\-+/.]{1,512}')
 EMAIL = re.compile(r'^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$')
 
@@ -243,6 +247,8 @@ class Mailbox:
         self.cache, self.lock = {}, threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8)
         self.unread_snap, self.unread_job, self.unread_dirty, self.unread_gen = None, None, False, 0
+        self.caps = {}   # source id -> (until, offers mail_update_bulk + mail_search ids_only)
+        self.jobs = {}   # Mark all as read in the background: job id -> progress (the button shows it)
 
     # ---------- accounts ----------
     def _status(self, source, caller=None):
@@ -260,6 +266,10 @@ class Mailbox:
                              'label': str(a.get('label') or '')[:40], 'status': str(a.get('status') or ''),
                              'via': str(a.get('via') or ''), 'mail': mail, 'calendar': calendar})
         access = value.get('mail_access') if isinstance(value.get('mail_access'), dict) else None
+        mc = value.get('mail_calendar') if isinstance(value.get('mail_calendar'), dict) else {}
+        tools = mc.get('tools') if isinstance(mc.get('tools'), list) else []
+        with self.lock:
+            self.caps[source.id] = (self.clock() + CAPS_TTL, 'mail_update_bulk' in tools)
         return {'id': source.id, 'name': NAMES[source.id], 'app': APPS[source.id], 'available': True, 'error': None, 'accounts': accounts,
                 'agent_access': {'level': access.get('level'), 'label': access.get('label')} if access else None}
 
@@ -459,6 +469,21 @@ class Mailbox:
         with self.lock:
             self.cache.clear()
 
+    def _bulk(self, source, caller=None):
+        """Does this source offer the bulk tools (contract 1.3: mail_update_bulk, mail_search ids_only)? Read from the
+        tool list in its /v1/status, which Mail asks anyway for the account list."""
+        with self.lock:
+            hit = self.caps.get(source.id)
+        if not hit or hit[0] <= self.clock():
+            self._status(source, caller)
+            with self.lock:
+                hit = self.caps.get(source.id)
+        return bool(hit and hit[1])
+
+    def _no_bulk(self, source):
+        with self.lock:
+            self.caps[source.id] = (self.clock() + CAPS_TTL, False)
+
     def update(self, key, message_id, flags, caller=None):
         source, email = self._resolve(key)
         args = {'account': email, 'id': message_id}
@@ -474,19 +499,24 @@ class Mailbox:
         self._unread_changed(key, message_id, flags)
         return value
 
-    def _unread_ids(self, key, folder, query, caller, cap):
-        """Every unread message in a scope (one account or all), as [(source, email, id)], at most cap, plus `more`."""
+    def _unread_ids(self, key, folder, query, caller, cap, progress=None):
+        """Every unread message in a scope (one account or all), as [(source, email, id)], at most cap, plus `more`.
+        A source with the bulk tools lists ids only, 500 per call; others page their normal search, 25 at a time."""
         if folder not in FOLDERS:
             raise MailError(400, 'invalid_folder', 'Unknown folder.')
         if not isinstance(query, str) or len(query) > 300:
             raise MailError(400, 'invalid_query', 'Search is too long.')
         targets = self._targets(key, caller)
+        counted, count_lock = {}, threading.Lock()
 
         def walk(target):
             source, email = target
             found, seen, token = [], set(), None
+            bulk = self._bulk(source, caller)
             while True:
                 args = {'account': email, 'folder': folder, 'unread_only': True, 'max': 25}
+                if bulk:
+                    args.update(ids_only=True, max=IDS_PAGE)
                 if query:
                     args['query'] = query
                 if token:
@@ -495,10 +525,18 @@ class Mailbox:
                     value = source.tool('mail_search', args, caller)
                 except MailError as error:
                     return target, found, bool(found), error
-                for m in value.get('messages') or []:
+                if isinstance(value.get('ids'), list):
+                    rows = [{'id': mid} for mid in value['ids']]
+                else:  # a source without ids_only answers with its normal search
+                    rows = value.get('messages') or []
+                for m in rows:
                     if isinstance(m, dict) and isinstance(m.get('id'), str) and m.get('unread', True) and m['id'] not in seen and ID.fullmatch(m['id']):
                         seen.add(m['id'])
                         found.append(m['id'])
+                if progress:
+                    with count_lock:
+                        counted[target] = len(found)
+                        progress('finding', min(sum(counted.values()), cap), None)
                 token = value.get('next_page_token')
                 if not token:
                     return target, found, False, None
@@ -536,24 +574,63 @@ class Mailbox:
             work.append((source, email, mid))
         return self._apply_read(work, read, caller)
 
-    def _apply_read(self, work, read, caller):
-        def one(entry):
-            source, email, mid = entry
-            try:
-                value = source.tool('mail_update', {'account': email, 'id': mid, 'read': read}, caller)
-                return entry, value, None
-            except MailError as error:
-                return entry, None, error
-
+    def _apply_read(self, work, read, caller, progress=None):
+        """Mark these (source, email, id) read or unread. One mail_update_bulk call per account per 1000 ids where the
+        source offers it; otherwise one mail_update per message, 8 side by side."""
         done, failed, first = [], [], None
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for (source, email, mid), value, error in pool.map(one, work):
-                key = f'{source.id}:{email}'
+        lock = threading.Lock()
+        total = len(work)
+
+        def tick():
+            if progress:
+                progress('marking', len(done) + len(failed), total)
+
+        def record(entry, value, error):
+            nonlocal first
+            source, email, mid = entry
+            key = f'{source.id}:{email}'
+            with lock:
                 if error:
                     failed.append({'account': key, 'id': mid, 'code': error.code})
                     first = first or error
                 else:
                     done.append({'account': key, 'id': str((value or {}).get('id') or mid)})
+
+        def one(entry):
+            source, email, mid = entry
+            try:
+                record(entry, source.tool('mail_update', {'account': email, 'id': mid, 'read': read}, caller), None)
+            except MailError as error:
+                record(entry, None, error)
+            tick()
+
+        groups, single = {}, []
+        for entry in work:
+            source = entry[0]
+            if self._bulk(source, caller):
+                groups.setdefault((source, entry[1]), []).append(entry)
+            else:
+                single.append(entry)
+        for (source, email), entries in groups.items():
+            for start in range(0, len(entries), BULK_MAX):
+                chunk = entries[start:start + BULK_MAX]
+                try:
+                    source.tool('mail_update_bulk', {'account': email, 'ids': [e[2] for e in chunk], 'read': read}, caller)
+                except MailError as error:
+                    if error.status == 404:  # an older source app after all: mark these one by one
+                        self._no_bulk(source)
+                        single += chunk
+                        continue
+                    for entry in chunk:
+                        record(entry, None, error)
+                    tick()
+                    continue
+                for entry in chunk:
+                    record(entry, None, None)
+                tick()
+        if single:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(one, single))
         if done:
             self._changed()
             self._unread_bulk({(d['account'], d['id']) for d in done}, read)
@@ -561,17 +638,67 @@ class Mailbox:
             raise first
         return {'read': read, 'changed': done, 'count': len(done), 'failed': failed}
 
-    def mark_all_read(self, key='all', folder='inbox', query='', caller=None, cap=MARK_MAX):
+    def mark_all_read(self, key='all', folder='inbox', query='', caller=None, cap=MARK_MAX, progress=None):
         """Mark every unread message in this scope read at the provider (Gmail / Outlook): one account or all of
-        them, one folder, optionally only search matches. Undo = set_read(changed, False)."""
-        work, more, errors = self._unread_ids(key or 'all', folder or 'inbox', query or '', caller, cap)
+        them, one folder, optionally only search matches. Undo = set_read(changed, False).
+        progress(phase, done, total) is told how far it got ('finding' ids, then 'marking' done of total)."""
+        work, more, errors = self._unread_ids(key or 'all', folder or 'inbox', query or '', caller, cap, progress)
         if not work:
             result = {'read': True, 'changed': [], 'count': 0, 'failed': []}
         else:
-            result = self._apply_read(work, True, caller)
+            if progress:
+                progress('marking', 0, len(work))
+            result = self._apply_read(work, True, caller, progress)
         result['more'] = more
         result['errors'] = [{'source': e.extra.get('source'), **e.as_dict()} for e in errors]
         return result
+
+    def start_mark_all_read(self, key='all', folder='inbox', query='', caller=OWNER):
+        """Mark all as read in the background, so the button can show how far it got (mark_job). Checks the
+        arguments first, so a bad request still fails at once."""
+        if folder not in FOLDERS:
+            raise MailError(400, 'invalid_folder', 'Unknown folder.')
+        if not isinstance(query, str) or len(query) > 300:
+            raise MailError(400, 'invalid_query', 'Search is too long.')
+        if key not in (None, '', 'all'):
+            self._resolve(key)
+        job_id = secrets.token_urlsafe(12)
+        job = {'id': job_id, 'state': 'running', 'phase': 'finding', 'done': 0, 'total': None, 'result': None,
+               'error': None, 'caller': caller, 'until': self.clock() + 600}
+        with self.lock:
+            self.jobs = {k: v for k, v in self.jobs.items() if v['until'] > self.clock()}
+            self.jobs[job_id] = job
+
+        def progress(phase, done, total):
+            with self.lock:
+                job.update(phase=phase, done=done, total=total)
+
+        def run():
+            try:
+                result = self.mark_all_read(key or 'all', folder, query, caller, progress=progress)
+                with self.lock:
+                    job.update(state='done', result=result, done=result['count'] + len(result['failed']))
+            except MailError as error:
+                with self.lock:
+                    job.update(state='failed', error=error.as_dict(), status=error.status)
+            except Exception:  # noqa: BLE001 - the button must stop spinning whatever happened
+                with self.lock:
+                    job.update(state='failed', error={'code': 'mail_error', 'message': 'Mail could not do that.'}, status=502)
+
+        threading.Thread(target=run, daemon=True).start()
+        return self.mark_job(job_id, caller)
+
+    def mark_job(self, job_id, caller=OWNER):
+        with self.lock:
+            job = self.jobs.get(job_id) if isinstance(job_id, str) else None
+            if not job or job['caller'] != caller:
+                raise MailError(404, 'not_found', 'That Mark all as read is not running any more.')
+            out = {k: job[k] for k in ('id', 'state', 'phase', 'done', 'total')}
+            if job['state'] == 'done':
+                out['result'] = job['result']
+            if job['state'] == 'failed':
+                out['error'] = job['error']
+            return out
 
     def _unread_bulk(self, keys, read):
         with self.lock:

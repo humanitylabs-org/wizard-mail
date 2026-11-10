@@ -23,7 +23,7 @@ from sources import MailError, OWNER  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 APP_ID = 'wizard-mail'
-VERSION = '0.5.0'
+VERSION = '0.5.1'
 ASSETS = {'index.html', 'icon.svg', 'app.js', 'connect.js', 'settings.js', 'styles.css', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js',
           'standalone.css'}
 FORWARDING = ('X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'X-Real-IP')
@@ -314,6 +314,8 @@ def handler_for(app):
                         return self.send_json(200, box.list(query.get('account') or 'all', query.get('folder') or 'inbox',
                                                             query.get('q') or '', query.get('cursor') or None, caller=OWNER,
                                                             unread=query.get('unread') == '1'))
+                    if path == '/api/mark-all-read':
+                        return self.send_json(200, box.mark_job(query.get('job'), OWNER))
                     if path == '/api/message':
                         return self.send_json(200, box.read(query.get('account'), query.get('id'), query.get('images') == '1', OWNER))
                     raise MailError(404, 'not_found', 'Not found.')
@@ -349,7 +351,11 @@ def handler_for(app):
                 if path == '/api/update':
                     return self.send_json(200, box.update(body.get('account'), body.get('id'), body, OWNER))
                 if path == '/api/mark-all-read':
-                    # The top "Mark all as read" button: the list's account scope, folder and search.
+                    # The top "Mark all as read" button: the list's account scope, folder and search. background: true
+                    # answers at once with a job the button polls (GET /api/mark-all-read?job=) to show its progress.
+                    if body.get('background') is True:
+                        return self.send_json(202, box.start_mark_all_read(body.get('account') or 'all', body.get('folder') or 'inbox',
+                                                                           body.get('q') or '', OWNER))
                     return self.send_json(200, box.mark_all_read(body.get('account') or 'all', body.get('folder') or 'inbox',
                                                                  body.get('q') or '', OWNER))
                 if path == '/api/mark-read':
