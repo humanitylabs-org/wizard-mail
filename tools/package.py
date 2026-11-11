@@ -17,7 +17,7 @@ LOADER = ("import base64,json,pathlib,runpy,zlib\nroot=pathlib.Path('/tmp/wizard
           "for name,text in files.items():\n p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\n"
           "runpy.run_path(str(root/'app/server.py'),run_name='__main__')\n")
 HEAD = f"""# Mail: one stdlib Python container; the app source is inlined below (refresh with `python3 tools/package.py`).
-# Mail keeps no data and no secrets: it asks the Google and Microsoft apps over the Wizard app network.
+# Mail keeps no mail and no secrets (only its owner switches in /data): it asks the Google and Microsoft apps over the Wizard app network.
 services:
   wizard-mail:
     image: {IMAGE}
@@ -43,6 +43,9 @@ services:
       WIZARD_OWNER_TOKEN: ${{WIZARD_OWNER_TOKEN:-}}
       WIZARD_ADMIN_TOKEN: ${{WIZARD_ADMIN_TOKEN:-}}
       MAIL_SOURCES: ${{MAIL_SOURCES:-google=http://wizard-google:18812,microsoft=http://wizard-microsoft:18814}}
+      MAIL_DATA: /data
+    volumes:
+    - ${{APP_DATA_DIR}}/data:/data
     command:
     - python
     - -c
