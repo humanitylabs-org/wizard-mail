@@ -441,7 +441,8 @@ class HttpTests(Base):
     def setUp(self):
         super().setUp()
         config = server.Config({'PORT': '0', 'WIZARD_TRUSTED_HOSTS': 'box.tail.ts.net', 'WIZARD_OWNER_LOGINS': 'owner@example.com',
-                                'MAIL_SOURCES': f'google={self.g.base},microsoft={self.m.base}', 'WIZARD_GRANTS_FILE': str(self.grants_file)})
+                                'MAIL_SOURCES': f'google={self.g.base},microsoft={self.m.base}', 'WIZARD_GRANTS_FILE': str(self.grants_file),
+                                'MAIL_DATA': tempfile.mkdtemp()})
         self.srv, self.app = server.serve(config)
         self.port = self.srv.server_address[1]
         config.local_hosts |= {f'127.0.0.1:{self.port}'}
@@ -519,6 +520,24 @@ class HttpTests(Base):
         self.assertEqual(len(after['items']), len(keys) - 1)
         self.assertEqual(self.req('GET', '/api/inbox', owner=False)[0], 401)
         self.assertEqual(self.req('GET', '/api/inbox', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
+
+    def test_switches_contract(self):
+        sw = {'X-Wizard-Request': None, 'X-Wizard-Switch': '1'}
+        status, doc, _ = self.req('GET', '/api/switches', headers=sw)
+        self.assertEqual((status, doc['contract']), (200, 'wizard.app-switches/1'))
+        self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
+                         [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11'])])
+        status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
+        self.assertEqual((status, doc['switches'][0]['on']), (200, True))
+        self.assertTrue(self.req('GET', '/api/switches', headers=sw)[1]['switches'][0]['on'])
+        self.assertFalse(self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': False}, headers=sw)[1]['switches'][0]['on'])
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'nope', 'on': True}, headers=sw)[0], 404)
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': 'yes'}, headers=sw)[0], 400)
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True})[0], 403)  # no X-Wizard-Switch
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers={**sw, 'Origin': 'https://evil.example'})[0], 403)
+        self.assertEqual(self.req('GET', '/api/switches', owner=False, headers=sw)[0], 401)
+        self.assertEqual(self.req('GET', '/api/switches', headers={**sw, 'Authorization': 'Bearer x'})[0], 403)
+        self.assertEqual(self.req('GET', '/api/switches', headers={'X-Wizard-Request': None})[0], 403)
 
     def test_guards(self):
         self.assertEqual(self.req('GET', '/api/accounts', owner=False)[0], 401)

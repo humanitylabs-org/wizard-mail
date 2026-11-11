@@ -73,7 +73,7 @@
 
   // ---------- Back: reader -> list (phone); sheets and layers register their own ----------
   if (window.WizardApp && window.WizardApp.version === 1) {
-    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.2' });
+    window.WizardApp.ready({ name: 'wizard-mail', version: '0.5.3' });
     window.WizardApp.back.register({
       // The reader opens beside the list (or over it on a phone); Back, Escape and ✕ close it and leave the list as it was.
       canGoBack: () => state.view === 'reader' || state.finding,
@@ -209,10 +209,24 @@
   // ---------- drafts waiting (issue 11) ----------
   // Drafts the agent (or he) saved are waiting to be sent: a count on Drafts, like every mail app, and on top of the
   // Inbox a small "Drafts waiting for you" strip with who each goes to, its subject and account. One tap opens it.
+  // Behind the owner switch drafts-waiting (GET/POST api/switches, wizard.app-switches/1), off by default; the
+  // Tracker's Try it may flip it, so it is read again whenever Mail becomes visible.
+  let switches = [];
+  const switchOn = (id) => !!switches.find(x => x.id === id)?.on;
+  async function loadSwitches() {
+    const was = switchOn('drafts-waiting');
+    try {
+      const r = await fetch('api/switches', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Wizard-Switch': '1' } });
+      if (r.ok) switches = (await r.json()).switches || [];
+    } catch (_) { /* keep the last known switches (off by default) */ }
+    const now = switchOn('drafts-waiting');
+    if (now && !was) loadDrafts();
+    else if (!now && was) showCounts();
+  }
   let drafts = { drafts: [], count: 0, more: false }, draftsFor = '';
-  function draftCount() { return drafts.count ? (drafts.more ? `${drafts.count}+` : String(drafts.count)) : ''; }
+  function draftCount() { return switchOn('drafts-waiting') && drafts.count ? (drafts.more ? `${drafts.count}+` : String(drafts.count)) : ''; }
   async function loadDrafts() {
-    if (!mailAccounts().length) return;
+    if (!switchOn('drafts-waiting') || !mailAccounts().length) return;
     const scope = state.scope;
     try {
       const v = await api('api/drafts?' + new URLSearchParams({ account: scope }));
@@ -229,7 +243,7 @@
     const strip = $('.wm-drafts');
     if (!strip) return;
     const list = draftsFor === state.scope ? drafts.drafts || [] : [];
-    const show = state.folder === 'inbox' && !state.q && list.length > 0 && mailAccounts().length > 0;
+    const show = switchOn('drafts-waiting') && state.folder === 'inbox' && !state.q && list.length > 0 && mailAccounts().length > 0;
     strip.hidden = !show;
     if (!show) { strip.replaceChildren(); return; }
     const n = draftCount();
@@ -990,9 +1004,9 @@
     openMessage(known || { id, account, unread: true });
   }
   addEventListener('hashchange', () => { if (mailAccounts().length) openFromLink(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshBadge(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { refreshBadge(); loadSwitches(); } });
 
-  loadAccounts().then(ok => { if (!ok) return; load(true); openFromLink(); refreshBadge(true); }).catch(e => {
+  loadSwitches().then(() => loadAccounts()).then(ok => { if (!ok) return; load(true); openFromLink(); refreshBadge(true); }).catch(e => {
     listEl.replaceChildren(el('div', null, 'wz-empty'));
     listEl.firstChild.append(el('strong', 'Mail is not available'), el('p', e.message));
   });

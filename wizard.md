@@ -4,7 +4,7 @@ id: wizard-mail
 name: Mail
 type: service
 category: app
-version: 0.5.2
+version: 0.5.3
 icon: icon.png
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
 tags: [communication, productivity]
@@ -35,6 +35,9 @@ system: false
 uses: [mail-calendar, wizard-google, wizard-microsoft]
 needs: []
 health: /healthz
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # Mail
@@ -45,6 +48,7 @@ Your email in Wizard: one inbox for every Google and Microsoft account you conne
 - **Read safely.** Messages render in a locked frame without scripts; pictures from the internet stay hidden until you tap Show pictures, so senders cannot track when you open their mail.
 - **Write, reply, forward.** Mail saves a draft in your mailbox, then sends it when you tap Send. Archive, delete (to Trash), mark unread, with Undo.
 - **Reply in chat.** On an open email, Reply in chat opens a new, unsent Chats draft with that email attached (sender, date, subject and the start of its text), so you can ask your agent about it. Nothing is sent; it is named apart from Reply, which answers the sender by email.
+- **Drafts waiting for you** (switch, off by default: Tracker Try it, `drafts-waiting`). A Drafts count in the side list and a strip on top of the Inbox with the drafts your agent wrote.
 - **Mark all as read.** One button at the top of the list marks every unread message in what you are looking at (all inboxes or one account, Inbox or Archive, and your search) as read in Gmail or Outlook itself. Undo puts them back.
 - **Phone and desktop.** One column on a phone; list and reader side by side, plus mailboxes, on a wide window.
 - **Settings, like Messenger's.** Connected accounts as tiles (tap one to see or disconnect it, + to connect another) and Agent access: No access, Read-only or Draft only (recommended, the default).
