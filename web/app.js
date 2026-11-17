@@ -532,18 +532,54 @@
       '<meta name="referrer" content="no-referrer"><base target="_blank"><style>html{color-scheme:light}body{margin:0;padding:18px 20px;background:Canvas;color:CanvasText;' +
       'font:0.9375rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{max-width:100%!important}' +
       'pre{white-space:pre-wrap}.wm-alt{display:inline-block;opacity:.6;font-size:.85em;border:1px dashed GrayText;padding:0 .3em;border-radius:3px}</style></head><body>' +
-      html + '</body></html>';
+      html +
+      // Last, so it beats the mail's own `html,body{height:100%;overflow:hidden}`: the page grows with its content (#18).
+      '<style>html,body{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}</style></body></html>';
+    // The box holds the reader's layout while the frame is measured, so the reader never jumps or loses its scroll.
+    const box = el('div', null, 'wm-framebox');
+    box.append(frame);
     frame.addEventListener('load', () => {
       const doc = frame.contentDocument;
       if (!doc) return;
-      const fit = () => { frame.style.height = Math.max(120, doc.documentElement.scrollHeight) + 'px'; };
+      const fit = () => {
+        const h = frameHeight(frame, box);
+        if (h && frame.style.height !== h + 'px') frame.style.height = h + 'px';
+      };
       fit();
       if (frameObserver) frameObserver.disconnect();
       frameObserver = new ResizeObserver(fit);
       frameObserver.observe(doc.documentElement);
+      if (doc.body) frameObserver.observe(doc.body);
       for (const img of doc.images) img.addEventListener('load', fit);
     });
-    return frame;
+    return box;
+  }
+  // The mail's full height, measured with the frame squeezed to 1px so that mail sized to the window (100%, 100vh,
+  // centred) shows its natural height instead of the frame's, and never grows without end. Content the mail pins
+  // (position: fixed/absolute) or scrolls inside its own box is counted too, so nothing below it is cut off (#18).
+  function frameHeight(frame, box) {
+    const doc = frame.contentDocument;
+    if (!doc || !doc.documentElement) return 0;
+    const was = frame.style.height;
+    box.style.minHeight = box.offsetHeight + 'px';
+    frame.style.minHeight = '0';
+    frame.style.height = '1px';
+    let h = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
+    if (doc.body) {
+      const top = doc.documentElement.getBoundingClientRect().top;
+      const all = doc.body.getElementsByTagName('*');
+      let low = 0;
+      for (let i = 0; i < all.length && i < 5000; i++) {
+        const r = all[i].getBoundingClientRect();
+        if (r.height) low = Math.max(low, r.bottom - top);
+      }
+      const pad = parseFloat(doc.defaultView.getComputedStyle(doc.body).paddingBottom) || 0;
+      h = Math.max(h, Math.ceil(low ? low + pad : 0), Math.ceil(doc.body.getBoundingClientRect().bottom - top));
+    }
+    frame.style.height = was;
+    frame.style.minHeight = '';
+    box.style.minHeight = '';
+    return Math.max(120, h);
   }
 
   // ---------- changes (each one leaves the message and offers Undo) ----------
