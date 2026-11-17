@@ -730,6 +730,22 @@ class HttpTests(Base):
         self.assertEqual(self.g.sent, [])
 
 
+class ReaderFrameTests(unittest.TestCase):
+    """#18: newsletters sized to the window (html/body height 100%, overflow hidden, an inner scroller, 100vh) showed
+    as a 120-150px strip, or grew without end. The frame is measured squeezed to 1px, after Mail's own last-word style."""
+
+    def test_frame_fits_mail_sized_to_the_window(self):
+        js = (ROOT / 'web/app.js').read_text()
+        frame = js[js.index('function htmlFrame('):js.index('// ---------- changes')]
+        self.assertIn("html,body{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}"
+                      "</style></body></html>", frame)
+        self.assertLess(frame.index('html +'), frame.index('height:auto!important'))  # after the mail's own styles
+        self.assertIn("frame.style.height = '1px'", frame)
+        self.assertIn('getBoundingClientRect', frame)  # pinned / inner-scrolled content is counted
+        self.assertIn('frameObserver.observe(doc.body)', frame)
+        self.assertNotIn('Math.max(120, doc.documentElement.scrollHeight)', frame)
+
+
 class PackageTests(unittest.TestCase):
     def test_recipe_is_fresh_and_versions_agree(self):
         import package
