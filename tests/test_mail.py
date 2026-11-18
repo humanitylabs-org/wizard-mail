@@ -527,7 +527,8 @@ class HttpTests(Base):
         self.assertEqual((status, doc['contract']), (200, 'wizard.app-switches/1'))
         self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
                          [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11']),
-                          ('connected-accounts-google', False, ['humanitylabs-org/wizard-connectors#15'])])
+                          ('connected-accounts-google', False, ['humanitylabs-org/wizard-connectors#15']),
+                          ('connect-gmail-in-mail', False, ['humanitylabs-org/wizard-connectors#21'])])
         status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
         self.assertEqual((status, doc['switches'][0]['on']), (200, True))
         self.assertTrue(self.req('GET', '/api/switches', headers=sw)[1]['switches'][0]['on'])
@@ -792,6 +793,37 @@ class ConnectedAccountsTests(Base):
         self.assertEqual((status, v['agent_access']['mail']), (200, 'read_only'))
         self.assertEqual(self.c.calls[-1][:3], ('POST', 'agent_access', {'mail': 'read_only'}))
         self.assertIsNone(self.c.calls[-1][3])
+
+    def here(self, on):
+        sw = {'X-Wizard-Request': None, 'X-Wizard-Switch': '1'}
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'connect-gmail-in-mail', 'on': on}, headers=sw)[0], 200)
+
+    def test_connect_here_off_by_default(self):
+        self.switch(True)  # the older switch alone: the Connected accounts sheet, no connect from Mail
+        self.assertFalse(self.req('GET', '/api/accounts')[1]['connect_here'])
+        self.assertEqual(self.req('POST', '/api/connected-connect', {})[0], 404)
+        self.assertNotIn('connect', [c[1] for c in self.c.calls])
+
+    def test_connect_here_starts_google_from_mail(self):
+        # wizard-connectors#21: one switch; Mail lists Connected accounts' Google and starts its Gmail sign-in.
+        self.here(True)
+        acc = self.req('GET', '/api/accounts')[1]
+        self.assertTrue(acc['connect_here'])
+        self.assertIn('connected', [s['id'] for s in acc['sources']])
+        url = 'https://accounts.google.com/o/oauth2/v2/auth?scope=x&state=y'
+        self.c.tool = lambda name, a: {'authorization_url': url, 'expires_in': 600} if name == 'connect' else FakeSource.tool(self.c, name, a)
+        status, v, _ = self.req('POST', '/api/connected-connect', {})
+        self.assertEqual((status, v), (200, {'authorization_url': url}))
+        self.assertEqual(self.c.calls[-1][:4], ('POST', 'connect', {}, None))  # the owner's tap, never an agent
+        # Anything but Google's own sign-in page is refused.
+        self.c.tool = lambda name, a: {'authorization_url': 'https://evil.example/x'} if name == 'connect' else FakeSource.tool(self.c, name, a)
+        self.assertEqual(self.req('POST', '/api/connected-connect', {})[0], 502)
+
+    def test_connect_here_passes_connected_accounts_errors(self):
+        self.here(True)
+        self.c.fail = (409, {'error': {'code': 'google_configuration_required', 'message': 'Set up your Google app in Connected accounts first.'}})
+        status, v, _ = self.req('POST', '/api/connected-connect', {})
+        self.assertEqual((status, v['error']['code']), (409, 'google_configuration_required'))
 
     def test_no_grant_yet_says_how_to_fix(self):
         self.switch(True)

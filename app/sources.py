@@ -363,6 +363,15 @@ class Mailbox:
         return {'accounts': accounts, 'manage': '/connected-accounts/',
                 'agent_access': {'mail': access.get('level'), 'levels': access.get('levels') or []} if access else None}
 
+    def connected_connect(self):
+        """Connect Gmail from inside Mail (wizard-connectors#21): the owner's tap asks Connected accounts to start
+        Google's sign-in with the Gmail scope; Mail opens the Google URL it answers. Owner only, never an agent."""
+        value = self.sources[CONNECTED].call('POST', '/v1/connect', {}, OWNER)
+        url = value.get('authorization_url')
+        if not isinstance(url, str) or not url.startswith('https://accounts.google.com/') or len(url) > 8000:
+            raise MailError(502, 'source_error', 'Connected accounts could not start the Google sign-in.', source=CONNECTED)
+        return {'authorization_url': url}
+
     def connected_agent_access(self, level):
         if not self.connected_on():
             raise MailError(404, 'not_found', 'Not found.')

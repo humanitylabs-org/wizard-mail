@@ -128,9 +128,73 @@
     openSheet('Connect Google', el('p', 'Mail uses the Google accounts in Connected accounts: one Google app and one sign-in for Mail and Calendar. Nobody else is involved.', 'muted'),
       steps, ...(note ? [note] : []), acts);
   }
+  // Connect Gmail from inside Mail (switch connect-gmail-in-mail, wizard-connectors#21): one sheet, Continue to Google,
+  // and Google's Allow is the owner's only step. Connected accounts starts the sign-in on the owner's Google app and turns
+  // its Gmail for Mail on by itself. Quick connect and your own Google app stay next to it.
+  function connectHere() { return !!(state.accounts && state.accounts.connect_here); }
+  let herePoll = null;
+  function hereSheet(backToSettings) {
+    const status = el('p', 'Your Google app in Connected accounts does the sign-in. Tap Continue, then Allow on Google’s screen. Nobody else is involved.', 'muted');
+    const go = button('Continue to Google', () => hereGo(go, status, backToSettings));
+    const others = el('div', null, 'wz-list');
+    const other = el('button', null, 'wz-row', { type: 'button' });
+    other.onclick = () => { stopHere(); closeSheet(); window.WizardConnect.open({ purpose: 'mail', source: 'google', available: available(), onDone: connectDone(backToSettings) }); };
+    const main = el('span', null, 'wz-main');
+    main.append(el('b', 'Other ways'), el('small', 'Quick connect or your own Google app'));
+    other.append(el('span', '⚙', 'wz-tile', { 'aria-hidden': 'true' }), main, el('span', '›', 'chev', { 'aria-hidden': 'true' }));
+    others.append(other);
+    const acts = el('div', null, 'wz-actions'); acts.append(go);
+    openSheet('Connect Gmail', status, acts, others);
+  }
+  async function hereGo(go, status, backToSettings) {
+    // Browsers only allow a window opened inside the tap: open it now, point it at Google once the URL is back.
+    let win = null;
+    try { win = window.open('', '_blank'); } catch (_) { win = null; }
+    go.disabled = true;
+    let out;
+    try { out = await api('api/connected-connect', {}); } catch (e) {
+      if (win) win.close();
+      go.disabled = false;
+      const msg = e.code === 'google_configuration_required' ? 'Your Google app is not set up yet. Ask your agent: “set up my Google app in Connected accounts”, then come back.'
+        : (e.code === 'service_off' || e.code === 'not_found') ? 'Update Connected accounts, then try again.' : e.message;
+      status.className = 'wc-bad'; status.textContent = msg;
+      return;
+    }
+    if (win) { try { win.opener = null; win.location.href = out.authorization_url; } catch (_) { win = null; } }
+    status.className = 'muted';
+    status.textContent = 'Tap Allow on Google’s screen. Your Gmail shows up here by itself.';
+    if (!win) {
+      const link = el('a', 'Open Google’s screen', 'wz-button', { href: out.authorization_url, target: '_blank', rel: 'noopener' });
+      go.replaceWith(link);
+    } else { go.disabled = false; go.className = 'wz-button secondary'; go.textContent = 'Open Google again'; }
+    waitHere(backToSettings);
+  }
+  function stopHere() { if (herePoll) { clearInterval(herePoll); herePoll = null; } }
+  function waitHere(backToSettings) {
+    stopHere();
+    const before = new Set(mailAccounts().map(a => a.key));
+    const until = Date.now() + 10 * 60 * 1000;
+    herePoll = setInterval(async () => {
+      if (Date.now() > until || !(sheet && sheet.open)) return stopHere();
+      let acc;
+      try { acc = await api('api/accounts'); } catch (_) { return; }
+      const added = (acc.sources || []).flatMap(s => s.accounts).find(a => a.source === 'connected' && a.mail && a.status === 'active' && !before.has(a.key));
+      if (!added) return;
+      stopHere(); closeSheet();
+      connectDone(backToSettings)({ email: added.email });
+    }, 3000);
+  }
+  function connectDone(backToSettings) {
+    return async result => {
+      if (result && result.email) say(`Connected ${result.email}.`);
+      if (await loadAccounts().catch(() => false)) load(true);
+      if (backToSettings) openSettings();
+    };
+  }
   function connect(source, backToSettings) {
+    if (connectHere() && (source === 'google' || source === 'connected')) return hereSheet(backToSettings);
     if (connectedOn() && (source === 'google' || source === 'connected')) return connectedSheet();
-    window.WizardConnect.open({ purpose: 'mail', source, available: available(), instead: connectedOn() ? { google: connectedSheet } : undefined, onDone: async result => {
+    window.WizardConnect.open({ purpose: 'mail', source, available: available(), instead: connectHere() ? { google: () => hereSheet(backToSettings) } : connectedOn() ? { google: connectedSheet } : undefined, onDone: async result => {
       if (result && result.email) say(`Connected ${result.email}.`);
       if (await loadAccounts().catch(() => false)) load(true);
       if (backToSettings) openSettings();
@@ -156,7 +220,7 @@
       if (!src) continue;
       if (s.id === 'connected') {
         const r = el('button', null, 'wz-row', { type: 'button' });
-        r.onclick = () => connectedSheet();
+        r.onclick = () => connect('connected');
         const main = el('span', null, 'wz-main');
         main.append(el('b', 'Google'), el('small', src.mail));
         r.append(el('span', 'G', 'wz-tile', { 'aria-hidden': 'true' }), main, el('span', '›', 'chev', { 'aria-hidden': 'true' }));
