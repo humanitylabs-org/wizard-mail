@@ -20,8 +20,11 @@ import sanitize
 
 CONTRACT = 'wizard.mail-calendar/1'
 DEFAULT_SOURCES = 'google=http://wizard-google:18812,microsoft=http://wizard-microsoft:18814'
-NAMES = {'google': 'Google', 'microsoft': 'Microsoft'}
-APPS = {'google': 'wizard-google', 'microsoft': 'wizard-microsoft'}
+NAMES = {'google': 'Google', 'microsoft': 'Microsoft', 'connected': 'Connected accounts'}
+APPS = {'google': 'wizard-google', 'microsoft': 'wizard-microsoft', 'connected': 'connected-accounts'}
+# Gmail through the Google account Connected accounts holds (switch connected-accounts-google; wizard-connectors#15).
+CONNECTED = 'connected'
+CONNECTED_DEFAULT = 'http://wizard-connectors-calendar:8799'
 FOLDERS = ('inbox', 'sent', 'drafts', 'archive', 'trash', 'all')
 LIST_TTL = 45
 INBOX_MAX = 50   # the Wizard inbox feed / badge list the newest unread mail, at most this many
@@ -106,8 +109,14 @@ class Grants:
 
     def __init__(self, path):
         self.path = path
-        self.stamp, self.tokens = None, {}
+        self.stamp, self.tokens, self.endpoints = None, {}, {}
         self.lock = threading.Lock()
+
+    def endpoint(self, *app_ids):
+        """The App Manager's provider endpoint for the first of app_ids it lists (`provider_endpoints`), or None."""
+        self.token(app_ids[0])
+        with self.lock:
+            return next((self.endpoints[a] for a in app_ids if a in self.endpoints), None)
 
     def token(self, app_id):
         if not self.path:
@@ -121,9 +130,11 @@ class Grants:
                         doc = json.loads(f.read(256 * 1024))
                     out = doc.get('outgoing') if isinstance(doc, dict) else None
                     self.tokens = {k: v for k, v in (out or {}).items() if isinstance(k, str) and isinstance(v, str)}
+                    ends = doc.get('provider_endpoints') if isinstance(doc, dict) else None
+                    self.endpoints = {k: v for k, v in (ends or {}).items() if isinstance(k, str) and isinstance(v, str)}
                     self.stamp = stamp
             except (OSError, ValueError):
-                self.stamp, self.tokens = None, {}
+                self.stamp, self.tokens, self.endpoints = None, {}, {}
             return self.tokens.get(app_id)
 
 
@@ -169,6 +180,53 @@ class Source:
 
     def tool(self, name, args, caller=None, timeout=None):
         return self.call('POST', f'/v1/{name}', args, caller, timeout)
+
+
+class ConnectedSource(Source):
+    """Gmail through Connected accounts (wizard-connectors docs/MAIL_API.md): the same contract tools under
+    /service/mail/v1/ on its ingress. Mail's grant goes with every call (it is private mail); the request says whether
+    it is the owner's own tap (X-Wizard-Owner) or an agent (X-Wizard-Agent), and Connected accounts applies the owner's
+    agent level. The address is the App Manager's `provider_endpoints["connected-accounts"]`."""
+
+    def __init__(self, base=None, timeout=30, grants=None):
+        super().__init__(CONNECTED, base or CONNECTED_DEFAULT, timeout, grants)
+        self.fixed = bool(base)
+
+    def call(self, method, path, body=None, caller=None, timeout=None):
+        base = self.base
+        if not self.fixed and self.grants:
+            found = self.grants.endpoint(APPS[CONNECTED], 'wizard-connectors')
+            parts = urllib.parse.urlsplit(found or '')
+            if parts.scheme == 'http' and parts.hostname and not parts.path.strip('/'):
+                base = f'http://{parts.netloc}'
+        grant = self.grants.token(APPS[CONNECTED]) if self.grants else None
+        if not grant:
+            raise MailError(503, 'source_unavailable', 'Mail is not linked to Connected accounts yet. Update Mail, then '
+                            'approve Mail\'s connection to Connected accounts.', source=self.id)
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Wizard-Grant': grant}
+        if caller == OWNER:
+            headers['X-Wizard-Owner'] = '1'
+        else:
+            headers['X-Wizard-Agent'] = (caller or agent(None)).split(':', 1)[-1]
+        request = urllib.request.Request(base + '/service/mail' + path, data=data, method=method, headers=headers)
+        try:
+            with self.opener.open(request, timeout=timeout or self.timeout) as response:
+                raw, status = response.read(12_000_001), response.status
+        except urllib.error.HTTPError as error:
+            raw, status = error.read(65536), error.code
+            error.close()
+        except (urllib.error.URLError, OSError, TimeoutError):
+            raise MailError(503, 'source_unavailable', 'Connected accounts is not reachable. Is it installed?', source=self.id) from None
+        try:
+            value = json.loads(raw) if raw else {}
+        except ValueError:
+            value = {}
+        if status >= 400:
+            err = value.get('error') if isinstance(value, dict) and isinstance(value.get('error'), dict) else {}
+            raise MailError(status if 400 <= status < 600 else 502, str(err.get('code') or 'source_error'),
+                            str(err.get('message') or 'Connected accounts could not do that.')[:400], source=self.id)
+        return value if isinstance(value, dict) else {}
 
 
 def _service_flags(source, services):
@@ -241,9 +299,14 @@ def reply_context(message, message_id, raw_html=''):
     return {'id': f'email-{digest}', 'title': f'Mail: {subject}'[:200], 'message': '\n'.join(lines)[:32000]}
 
 class Mailbox:
-    def __init__(self, sources, clock=time.time, grants_file=None):
+    def __init__(self, sources, clock=time.time, grants_file=None, connected_on=None):
         self.grants = Grants(grants_file)
-        self.sources = {sid: (s if isinstance(s, Source) else Source(sid, s, grants=self.grants)) for sid, s in sources.items()}
+        self.sources = {sid: (s if isinstance(s, Source) else ConnectedSource(s, grants=self.grants) if sid == CONNECTED
+                              else Source(sid, s, grants=self.grants)) for sid, s in sources.items()}
+        # Connected accounts' Google (switch connected-accounts-google): a source only while the switch is on.
+        self.connected_on = connected_on or (lambda: False)
+        if CONNECTED not in self.sources:
+            self.sources[CONNECTED] = ConnectedSource(grants=self.grants)
         self.clock = clock
         self.cache, self.lock = {}, threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8)
@@ -278,16 +341,40 @@ class Mailbox:
                 'agent_access': {'level': access.get('level'), 'label': access.get('label')} if access else None}
 
     def accounts(self, caller=None):
-        found = list(self.pool.map(lambda src: self._status(src, caller), self.sources.values()))
+        found = list(self.pool.map(lambda src: self._status(src, caller), self._live().values()))
         usable = [a for s in found for a in s['accounts'] if a['mail'] and a['status'] == 'active']
         return {'contract': CONTRACT, 'sources': found, 'connected': bool(usable),
                 'needs_attention': [a for s in found for a in s['accounts'] if a['status'] != 'active']}
+
+    def _live(self):
+        """The sources in use now: Connected accounts only while its switch is on."""
+        on = self.connected_on()
+        return {sid: s for sid, s in self.sources.items() if sid != CONNECTED or on}
+
+    def connected_settings(self):
+        """For Settings: Connected accounts' Google accounts and its agent level (it keeps and enforces the level)."""
+        if not self.connected_on():
+            raise MailError(404, 'not_found', 'Not found.')
+        value = self.sources[CONNECTED].call('GET', '/v1/status', None, OWNER)
+        accounts = [{'email': str(a.get('email') or '').lower(), 'status': str(a.get('status') or ''), 'via': 'own-client',
+                     'services': [x for x in (a.get('services') or []) if isinstance(x, str)]}
+                    for a in value.get('accounts') or [] if isinstance(a, dict) and a.get('email')]
+        access = value.get('mail_access') if isinstance(value.get('mail_access'), dict) else None
+        return {'accounts': accounts, 'manage': '/connected-accounts/',
+                'agent_access': {'mail': access.get('level'), 'levels': access.get('levels') or []} if access else None}
+
+    def connected_agent_access(self, level):
+        if not self.connected_on():
+            raise MailError(404, 'not_found', 'Not found.')
+        value = self.sources[CONNECTED].call('POST', '/v1/agent_access', {'mail': level}, OWNER)
+        access = value.get('agent_access') if isinstance(value.get('agent_access'), dict) else {}
+        return {'agent_access': {'mail': access.get('level'), 'levels': access.get('levels') or []}}
 
     def _resolve(self, key, need='mail'):
         if not isinstance(key, str) or ':' not in key or len(key) > 300:
             raise MailError(400, 'invalid_account', 'Choose an account.')
         sid, _, email = key.partition(':')
-        if sid not in self.sources or not EMAIL.match(email):
+        if sid not in self._live() or not EMAIL.match(email):
             raise MailError(400, 'invalid_account', 'Choose an account.')
         return self.sources[sid], email
 

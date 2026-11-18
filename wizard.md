@@ -32,7 +32,7 @@ view:
     dist: web
 provides: [mail]
 system: false
-uses: [mail-calendar, wizard-google, wizard-microsoft]
+uses: [mail-calendar, wizard-google, wizard-microsoft, connected-accounts]
 needs: []
 health: /healthz
 switches:
@@ -48,6 +48,7 @@ Your email in Wizard: one inbox for every Google and Microsoft account you conne
 - **Read safely.** Messages render in a locked frame without scripts; pictures from the internet stay hidden until you tap Show pictures, so senders cannot track when you open their mail.
 - **Write, reply, forward.** Mail saves a draft in your mailbox, then sends it when you tap Send. Archive, delete (to Trash), mark unread, with Undo.
 - **Reply in chat.** On an open email, Reply in chat opens a new, unsent Chats draft with that email attached (sender, date, subject and the start of its text), so you can ask your agent about it. Nothing is sent; it is named apart from Reply, which answers the sender by email.
+- **Google through Connected accounts** (switch, off by default: Tracker Try it, `connected-accounts-google`). Gmail uses the Google app and accounts in Connected accounts: one Google app, one sign-in, no Composio. Connecting Google in Mail points you there; tap Allow next to Mail on the account (Connected accounts' `gmail-for-mail` switch on).
 - **Drafts waiting for you** (switch, off by default: Tracker Try it, `drafts-waiting`). A Drafts count in the side list and a strip on top of the Inbox with the drafts your agent wrote.
 - **Mark all as read.** One button at the top of the list marks every unread message in what you are looking at (all inboxes or one account, Inbox or Archive, and your search) as read in Gmail or Outlook itself. Undo puts them back.
 - **Phone and desktop.** One column on a phone; list and reader side by side, plus mailboxes, on a wide window.

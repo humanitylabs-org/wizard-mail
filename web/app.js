@@ -108,8 +108,29 @@
     for (const s of (state.accounts ? state.accounts.sources : [])) out[s.id] = s.available;
     return out;
   }
+  // Google through Connected accounts (switch connected-accounts-google, wizard-connectors#15): Mail lists the
+  // `connected` source only while the switch is on. Then Google means the Google app in Connected accounts: no Quick
+  // connect (Composio), no second Google app.
+  function connectedOn() { return !!(state.accounts && state.accounts.sources.some(s => s.id === 'connected')); }
+  function srcName(id) { return id === 'microsoft' ? 'Microsoft' : 'Google'; }
+  function connectedSheet() {
+    const src = state.accounts.sources.find(s => s.id === 'connected') || {};
+    const waiting = (src.accounts || []).filter(a => !a.mail);
+    const steps = el('ol', null, 'wm-steps');
+    for (const t of ['Open Connected accounts. Your Google app lives there (set it up once if you have not).',
+      'On each Google account, tap Allow next to Mail and finish on Google’s screen.',
+      'Come back here: your Gmail shows up by itself.']) steps.append(el('li', t));
+    const open = el('a', 'Open Connected accounts', 'wz-button', { href: '/connected-accounts/', target: '_top' });
+    const again = button('Check again', async () => { closeSheet(); if (await loadAccounts().catch(() => false)) load(true); }, 'wz-button secondary');
+    const acts = el('div', null, 'wz-actions'); acts.append(open, again);
+    const note = !src.available ? el('p', (src.error && src.error.message) || 'Connected accounts is not reachable. Is it installed?', 'wc-bad')
+      : waiting.length ? el('p', `${waiting.map(a => a.email).join(', ')}: tap Allow next to Mail in Connected accounts.`, 'muted') : null;
+    openSheet('Connect Google', el('p', 'Mail uses the Google accounts in Connected accounts: one Google app and one sign-in for Mail and Calendar. Nobody else is involved.', 'muted'),
+      steps, ...(note ? [note] : []), acts);
+  }
   function connect(source, backToSettings) {
-    window.WizardConnect.open({ purpose: 'mail', source, available: available(), onDone: async result => {
+    if (connectedOn() && (source === 'google' || source === 'connected')) return connectedSheet();
+    window.WizardConnect.open({ purpose: 'mail', source, available: available(), instead: connectedOn() ? { google: connectedSheet } : undefined, onDone: async result => {
       if (result && result.email) say(`Connected ${result.email}.`);
       if (await loadAccounts().catch(() => false)) load(true);
       if (backToSettings) openSettings();
@@ -118,7 +139,7 @@
   // Settings (settings.js): connected accounts and what agents may do with mail, modelled on Messenger's.
   function openSettings() {
     window.WizardMailSettings.open({
-      accounts: () => state.accounts, say, previews: previewsOn, setPreviews,
+      accounts: () => state.accounts, say, previews: previewsOn, setPreviews, api,
       connect: source => connect(source, true),
       changed: async () => { if (await loadAccounts().catch(() => false)) load(true); else { state.messages = []; renderList(); } },
     });
@@ -130,7 +151,18 @@
       el('p', 'Choose where your mail lives. You sign in once in a small window; Mail does the rest.', 'muted'));
     const list = el('div', null, 'wz-list wm-hello-list');
     for (const s of (state.accounts ? state.accounts.sources : [])) {
-      const src = window.WizardConnect.sources[s.id];
+      if (s.id === 'google' && connectedOn()) continue;  // Google is Connected accounts' row
+      const src = s.id === 'connected' ? { mail: 'Gmail, through Connected accounts' } : window.WizardConnect.sources[s.id];
+      if (!src) continue;
+      if (s.id === 'connected') {
+        const r = el('button', null, 'wz-row', { type: 'button' });
+        r.onclick = () => connectedSheet();
+        const main = el('span', null, 'wz-main');
+        main.append(el('b', 'Google'), el('small', src.mail));
+        r.append(el('span', 'G', 'wz-tile', { 'aria-hidden': 'true' }), main, el('span', '›', 'chev', { 'aria-hidden': 'true' }));
+        list.append(r);
+        continue;
+      }
       const r = el('button', null, 'wz-row', { type: 'button' });
       r.disabled = !s.available;
       r.onclick = () => connect(s.id);
@@ -153,8 +185,8 @@
     for (const a of accounts) {
       const b = button('', () => pickScope(a.key), 'wm-navitem' + (state.scope === a.key ? ' on' : ''));
       const text = el('span', null, 'wm-navtext');
-      text.append(el('b', a.label || (a.source === 'google' ? 'Google' : 'Microsoft')), el('small', a.email));
-      b.append(el('span', initial(a.label || (a.source === 'google' ? 'G' : 'M')), 'wm-dot', { 'aria-hidden': 'true' }), text);
+      text.append(el('b', a.label || srcName(a.source)), el('small', a.email));
+      b.append(el('span', initial(a.label || srcName(a.source)[0]), 'wm-dot', { 'aria-hidden': 'true' }), text);
       nav.append(b);
     }
     const folders = $('.wm-nav-folders');
@@ -293,7 +325,7 @@
       list.append(r);
     };
     add('all', 'All inboxes', `${mailAccounts().length} accounts`);
-    for (const a of mailAccounts()) add(a.key, a.label || a.email, `${a.source === 'google' ? 'Google' : 'Microsoft'}${a.label ? ' · ' + a.email : ''}`);
+    for (const a of mailAccounts()) add(a.key, a.label || a.email, `${srcName(a.source)}${a.label ? ' · ' + a.email : ''}`);
     openSheet('Show mail from', list, button('+ Add account', () => { closeSheet(); connect(); }, 'wz-button secondary'));
   }
 
