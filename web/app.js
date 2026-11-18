@@ -108,8 +108,8 @@
     for (const s of (state.accounts ? state.accounts.sources : [])) out[s.id] = s.available;
     return out;
   }
-  // Google through Connected accounts (switch connected-accounts-google, wizard-connectors#15): Mail lists the
-  // `connected` source only while the switch is on. Then Google means the Google app in Connected accounts: no Quick
+  // Google through Connected accounts (wizard-connectors#15, on for everyone since wizard-mail#29): Mail lists the
+  // `connected` source. Then Google means the Google app in Connected accounts: no Quick
   // connect (Composio), no second Google app.
   function connectedOn() { return !!(state.accounts && state.accounts.sources.some(s => s.id === 'connected')); }
   function srcName(id) { return id === 'microsoft' ? 'Microsoft' : 'Google'; }
@@ -128,7 +128,7 @@
     openSheet('Connect Google', el('p', 'Mail uses the Google accounts in Connected accounts: one Google app and one sign-in for Mail and Calendar. Nobody else is involved.', 'muted'),
       steps, ...(note ? [note] : []), acts);
   }
-  // Connect Gmail from inside Mail (switch connect-gmail-in-mail, wizard-connectors#21): one sheet, Continue to Google,
+  // Connect Gmail from inside Mail (wizard-connectors#21, on for everyone since wizard-mail#29): one sheet, Continue to Google,
   // and Google's Allow is the owner's only step. Connected accounts starts the sign-in on the owner's Google app and turns
   // its Gmail for Mail on by itself. Quick connect and your own Google app stay next to it.
   function connectHere() { return !!(state.accounts && state.accounts.connect_here); }

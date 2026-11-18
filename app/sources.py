@@ -22,7 +22,7 @@ CONTRACT = 'wizard.mail-calendar/1'
 DEFAULT_SOURCES = 'google=http://wizard-google:18812,microsoft=http://wizard-microsoft:18814'
 NAMES = {'google': 'Google', 'microsoft': 'Microsoft', 'connected': 'Connected accounts'}
 APPS = {'google': 'wizard-google', 'microsoft': 'wizard-microsoft', 'connected': 'connected-accounts'}
-# Gmail through the Google account Connected accounts holds (switch connected-accounts-google; wizard-connectors#15).
+# Gmail through the Google account Connected accounts holds (wizard-connectors#15; on for everyone since wizard-mail#29).
 CONNECTED = 'connected'
 CONNECTED_DEFAULT = 'http://wizard-connectors-calendar:8799'
 FOLDERS = ('inbox', 'sent', 'drafts', 'archive', 'trash', 'all')
@@ -303,7 +303,7 @@ class Mailbox:
         self.grants = Grants(grants_file)
         self.sources = {sid: (s if isinstance(s, Source) else ConnectedSource(s, grants=self.grants) if sid == CONNECTED
                               else Source(sid, s, grants=self.grants)) for sid, s in sources.items()}
-        # Connected accounts' Google (switch connected-accounts-google): a source only while the switch is on.
+        # Connected accounts' Google: a source only while connected_on() (Mail's App passes always-on since wizard-mail#29).
         self.connected_on = connected_on or (lambda: False)
         if CONNECTED not in self.sources:
             self.sources[CONNECTED] = ConnectedSource(grants=self.grants)
