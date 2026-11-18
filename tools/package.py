@@ -44,6 +44,8 @@ services:
       WIZARD_ADMIN_TOKEN: ${{WIZARD_ADMIN_TOKEN:-}}
       MAIL_SOURCES: ${{MAIL_SOURCES:-google=http://wizard-google:18812,microsoft=http://wizard-microsoft:18814}}
       MAIL_DATA: /data
+      MAIL_AGENT_SERVICE: ${{MAIL_AGENT_SERVICE:-http://wizard-agent-service:8787}}
+      MAIL_AGENT_INBOX_TOKEN: ${{MAIL_AGENT_INBOX_TOKEN:-}}
     volumes:
     - ${{APP_DATA_DIR}}/data:/data
     command:

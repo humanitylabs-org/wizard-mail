@@ -521,6 +521,12 @@ class HttpTests(Base):
         self.assertEqual(self.req('GET', '/api/inbox', owner=False)[0], 401)
         self.assertEqual(self.req('GET', '/api/inbox', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
 
+    def test_agent_inbox_status_is_owner_only_and_off_by_default(self):
+        status, doc, _ = self.req('GET', '/api/agent-inbox')
+        self.assertEqual((status, doc), (200, {'switch': False, 'last': {}}))
+        self.assertEqual(self.app.watcher.check(), {'state': 'off'})
+        self.assertEqual(self.req('GET', '/api/agent-inbox', owner=False)[0], 401)
+
     def test_switches_contract(self):
         sw = {'X-Wizard-Request': None, 'X-Wizard-Switch': '1'}
         status, doc, _ = self.req('GET', '/api/switches', headers=sw)
@@ -528,7 +534,8 @@ class HttpTests(Base):
         self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
                          [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11']),
                           ('connected-accounts-google', False, ['humanitylabs-org/wizard-connectors#15']),
-                          ('connect-gmail-in-mail', False, ['humanitylabs-org/wizard-connectors#21'])])
+                          ('connect-gmail-in-mail', False, ['humanitylabs-org/wizard-connectors#21']),
+                          ('agent-inbox-events', False, ['humanitylabs-org/wizard-mail#26'])])
         status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
         self.assertEqual((status, doc['switches'][0]['on']), (200, True))
         self.assertTrue(self.req('GET', '/api/switches', headers=sw)[1]['switches'][0]['on'])
@@ -831,6 +838,114 @@ class ConnectedAccountsTests(Base):
         src = next(s for s in self.req('GET', '/api/accounts')[1]['sources'] if s['id'] == 'connected')
         self.assertFalse(src['available'])
         self.assertIn('Connected accounts', src['error']['message'])
+
+
+class FakeService:
+    """The Agent Service's POST /wizard/v1/agent-inbox/events: records events, answers `status` (404 = inbox off)."""
+
+    def __init__(self):
+        self.events, self.status, self.auth = [], 201, []
+        service = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                assert self.path == '/wizard/v1/agent-inbox/events' and self.headers['Content-Type'] == 'application/json'
+                assert not self.headers.get('Origin') and not self.headers.get('Cookie')
+                service.auth.append(self.headers.get('Authorization'))
+                if service.status < 300:
+                    service.events.append(body)
+                raw = json.dumps({'created': True}).encode()
+                self.send_response(service.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.srv = ThreadingHTTPServer(('127.0.0.1', 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = f'http://127.0.0.1:{self.srv.server_address[1]}'
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class AgentInboxTests(unittest.TestCase):
+    """New mail to the agent inbox (switch agent-inbox-events, wizard-mail#26; wizard-agent-service#552)."""
+    NOW = 1793750400  # 2026-11-04T00:00:00Z
+
+    def setUp(self):
+        import agent_inbox
+        self.ai = agent_inbox
+        self.svc = FakeService()
+        self.addCleanup(self.svc.close)
+        self.on = True
+        self.mail = []
+        box = type('Box', (), {'unread': lambda _s, wait=3.0: (list(self.mail), False)})()
+        self.data = Path(tempfile.mkdtemp())
+        self.w = agent_inbox.Watcher(box, self.data, lambda: self.on, service=self.svc.base + '/', token='app-cred', clock=lambda: self.NOW)
+
+    def msg(self, mid, subject='Lunch?', snippet='Are you free on Friday', date='2026-11-03T20:00:00+00:00'):
+        m = {'id': mid, 'account': 'google:me@gmail.com', 'from': {'name': 'Anna', 'email': 'anna@example.com'},
+             'subject': subject, 'snippet': snippet, 'date': date, 'unread': True, 'body_text': 'SECRET BODY'}
+        self.mail.insert(0, m)  # newest first, like Mailbox.unread
+        return m
+
+    def test_switch_on_takes_waiting_mail_as_seen_then_posts_each_new_mail_once(self):
+        self.msg('old1')
+        self.assertEqual(self.w.check(), {'state': 'armed', 'waiting': 1})
+        self.assertEqual(self.svc.events, [])  # no flood of the mail already waiting
+        self.msg('n1')
+        self.msg('n2', subject='Your payment failed', snippet='We could not charge your card')
+        self.assertEqual(self.w.check(), {'state': 'ok', 'posted': 2})
+        first, second = self.svc.events
+        self.assertEqual(first, {'type': 'mail', 'source': {'app': 'wizard-mail', 'item': 'google:me@gmail.com:n1'},
+                                 'sender': {'name': 'Anna', 'email': 'anna@example.com'}, 'title': 'Lunch?',
+                                 'ask': 'Are you free on Friday', 'link': '/wizard-mail/#msg=google%3Ame%40gmail.com:n1',
+                                 'privacy_class': 'private'})
+        self.assertEqual(second['type'], 'payment_failed')
+        self.assertNotIn('SECRET BODY', json.dumps(self.svc.events))  # never the body
+        self.assertEqual(set(self.svc.auth), {'Bearer app-cred'})
+        self.assertEqual(self.w.check(), {'state': 'ok', 'posted': 0})  # the same mail is not posted again
+        # A restart keeps what was posted (state on the box).
+        again = self.ai.Watcher(self.w.mailbox, self.data, lambda: True, service=self.svc.base, clock=lambda: self.NOW)
+        self.assertEqual(again.check(), {'state': 'ok', 'posted': 0})
+
+    def test_inbox_off_404_posts_nothing_more_until_next_check(self):
+        self.w.check()
+        self.msg('a')
+        self.msg('b')
+        self.svc.status = 404
+        self.assertEqual(self.w.check(), {'state': 'paused', 'posted': 0, 'reason': 'agent_inbox_off'})
+        self.assertEqual(len(self.svc.auth), 1)  # stopped after the first 404
+        self.svc.status = 201
+        self.assertEqual(self.w.check(), {'state': 'ok', 'posted': 2})  # both tried again, oldest first
+        self.assertEqual([e['source']['item'][-1] for e in self.svc.events], ['a', 'b'])
+
+    def test_unreachable_service_and_old_mail(self):
+        self.w.check()
+        self.msg('stale', date='2026-10-01T00:00:00+00:00')
+        self.w.url = 'http://127.0.0.1:9/wizard/v1/agent-inbox/events'
+        self.assertEqual(self.w.check(), {'state': 'ok', 'posted': 0})  # too old: never posted, no request
+        self.msg('fresh')
+        self.assertEqual(self.w.check(), {'state': 'paused', 'posted': 0, 'reason': 'unreachable'})
+
+    def test_switch_off_posts_nothing_and_rearms(self):
+        self.on = False
+        self.msg('x')
+        self.assertEqual(self.w.check(), {'state': 'off'})
+        self.on = True
+        self.assertEqual(self.w.check()['state'], 'armed')
+        self.on = False
+        self.w.check()
+        self.msg('while-off')
+        self.on = True
+        self.assertEqual(self.w.check()['state'], 'armed')  # mail from while it was off is not a flood either
+        self.assertEqual(self.svc.events, [])
 
 
 class ReaderFrameTests(unittest.TestCase):
