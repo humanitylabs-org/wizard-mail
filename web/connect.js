@@ -81,10 +81,14 @@
   function open(opts) {
     purpose = opts.purpose === 'calendar' ? 'calendar' : 'mail';
     onDone = opts.onDone || (() => {});
+    // A host app may route a source elsewhere (Mail: Google through Connected accounts, wizard-connectors#15).
+    const instead = opts.instead || {};
+    if (opts.source && instead[opts.source]) return instead[opts.source]();
     if (opts.source && SOURCES[opts.source]) return choose(SOURCES[opts.source]);
     const have = opts.available || { google: true, microsoft: true };
     const list = el('div', null, 'wz-list');
     for (const src of Object.values(SOURCES)) {
+      if (instead[src.id]) { list.append(row(src.name, src[purpose], () => { close(); instead[src.id](); }, src.name[0])); continue; }
       list.append(row(src.name, have[src.id] === false ? `Get the ${src.name} app first` : src[purpose], () => choose(src), src.name[0], have[src.id] === false));
     }
     sheet(purpose === 'calendar' ? 'Connect your calendar' : 'Connect your email', list,

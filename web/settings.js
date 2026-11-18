@@ -20,7 +20,7 @@
       ['rgb(242 80 34)', 'M1 1h10v10H1z'], ['rgb(127 186 0)', 'M12 1h10v10H12z'],
       ['rgb(0 164 239)', 'M1 12h10v10H1z'], ['rgb(255 185 0)', 'M12 12h10v10H12z']] },
   };
-  const NAMES = { google: 'Google', microsoft: 'Microsoft' };
+  const NAMES = { google: 'Google', microsoft: 'Microsoft', connected: 'Google' };
   const VIA = { composio: 'Quick connect', 'own-client': 'Your own Google app', 'own-app': 'Your own Microsoft app' };
   const LEVEL_TEXT = { no_access: 'Agents can\'t read your mail.', read_only: 'Agents read and search your mail. They can\'t draft or send.',
     draft_only: 'Agents read, sort and write drafts. Only you send, from Mail.' };
@@ -35,7 +35,7 @@
   }
   function button(text, fn, cls, attrs) { const b = el('button', text, cls, { type: 'button', ...attrs }); b.onclick = fn; return b; }
   function mark(source) {
-    const m = MARKS[source];
+    const m = MARKS[source === 'connected' ? 'google' : source];
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', m ? m.box : '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', 'wst-mark');
     for (const [fill, d] of (m ? m.paths : [])) { const p = document.createElementNS(NS, 'path'); p.setAttribute('fill', fill); p.setAttribute('d', d); svg.append(p); }
@@ -65,6 +65,14 @@
     const sources = (accounts && accounts.sources) || [];
     const views = await Promise.all(sources.map(async s => {
       if (!s.available) return { id: s.id, available: false, accounts: [], access: null };
+      if (s.id === 'connected') {
+        // Google through Connected accounts (wizard-connectors#15): Mail's own routes ask it; it keeps the agent level.
+        try {
+          const v = await opts.api('api/connected-settings');
+          return { id: s.id, available: true, connected: true, manage: v.manage, access: v.agent_access || null,
+            accounts: (v.accounts || []).filter(a => (a.services || []).includes('gmail')) };
+        } catch (e) { return { id: s.id, available: true, connected: true, error: e.message, accounts: [], access: null }; }
+      }
       try {
         const v = await client(s.id).api('api/mail-settings');
         return { id: s.id, available: true, accounts: v.accounts || [], access: v.agent_access || null };
@@ -145,7 +153,10 @@
       const want = choice.value;
       choice.disabled = true;
       try {
-        for (const s of known) s.access = (await client(s.id).api('api/agent-access', { mail: want })).agent_access;
+        for (const s of known) {
+          s.access = s.connected ? (await opts.api('api/connected-agent-access', { mail: want })).agent_access
+            : (await client(s.id).api('api/agent-access', { mail: want })).agent_access;
+        }
         note.textContent = LEVEL_TEXT[want] || '';
         say(`Agent access: ${levels.find(l => l.id === want).label}`);
       } catch (e) {
@@ -165,12 +176,13 @@
     const ok = a.status === 'active';
     const facts = el('div', null, 'wst-group');
     const fact = (k, v) => { const r = el('div', null, 'wst-row wst-fact'); r.append(el('span', k, 'wst-k'), el('span', v, 'wst-v')); return r; };
-    facts.append(fact('Account', a.email), fact('Connected with', `${NAMES[s.id]} · ${VIA[a.via] || a.via || '—'}`),
+    facts.append(fact('Account', a.email), fact('Connected with', s.connected ? 'Google · Connected accounts' : `${NAMES[s.id]} · ${VIA[a.via] || a.via || '—'}`),
       fact('Status', ok ? 'Working' : 'Needs a new sign-in'));
     const back = button('‹ Settings', () => render(), 'wst-back');
     const acts = el('div', null, 'wst-actions');
     if (!ok) acts.append(button('Sign in again', () => { close(); opts.connect(s.id); }, 'wz-button'));
-    if (a.disconnect) acts.append(button('Disconnect', () => askDisconnect(s, a), 'wz-button secondary wst-danger'));
+    if (s.connected) acts.append(el('a', 'Manage in Connected accounts', 'wz-button secondary', { href: s.manage || '/connected-accounts/', target: '_top' }));
+    else if (a.disconnect) acts.append(button('Disconnect', () => askDisconnect(s, a), 'wz-button secondary wst-danger'));
     else acts.append(el('p', `Update the ${NAMES[s.id]} app to disconnect from Mail, or open the ${NAMES[s.id]} app.`, 'wst-muted'));
     frame(a.label || a.email, back, facts, acts);
   }
