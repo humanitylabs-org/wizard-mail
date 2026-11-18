@@ -36,15 +36,6 @@ SWITCHES = [
     {'id': 'drafts-waiting', 'name': 'Drafts waiting for you',
      'description': 'A Drafts count in the side list and a "Drafts waiting for you" strip on top of the Inbox, so drafts your agent wrote show when Mail opens.',
      'default': False, 'issues': ['humanitylabs-org/wizard-mail#11']},
-    {'id': 'connected-accounts-google', 'name': 'Google through Connected accounts',
-     'description': 'Gmail uses the Google app and accounts in Connected accounts: one Google app, one sign-in, no '
-                    'Composio. Connecting Google in Mail points you there. Needs Connected accounts with Gmail for Mail on.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-connectors#15']},
-    {'id': 'connect-gmail-in-mail', 'name': 'Connect Gmail from inside Mail',
-     'description': 'Connect your email → Google opens one sheet: Continue to Google, tap Allow, and your Gmail shows up. '
-                    'It goes through your Google app in Connected accounts, with no switch to find there. Quick connect '
-                    'and your own Google app stay next to it.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-connectors#21']},
     {'id': agent_inbox.SWITCH, 'name': 'Tell your agent about new mail',
      'description': 'Each new email goes to your agent\'s inbox as a short note (sender, subject and a line of the text, '
                     'never the whole email). Your agent\'s alert rules decide what reaches Alerts; the rest waits for '
@@ -248,8 +239,9 @@ class App:
     def __init__(self, config, mailbox=None):
         self.config = config
         self.mailbox = mailbox or sources_mod.Mailbox(config.sources, grants_file=config.grants_file,
-                                                      connected_on=lambda: switch_on(config, 'connected-accounts-google')
-                                                      or switch_on(config, 'connect-gmail-in-mail'))
+                                                      connected_on=lambda: True)
+        # Gmail through Connected accounts and Connect Gmail from inside Mail ship on (wizard-mail#29; the switches
+        # connected-accounts-google and connect-gmail-in-mail are gone, a saved state for them is ignored).
         self.watcher = agent_inbox.Watcher(self.mailbox, config.data_dir, lambda: switch_on(config, agent_inbox.SWITCH),
                                            service=config.agent_service, token=config.agent_token)
 
@@ -383,8 +375,8 @@ def handler_for(app):
                         # The watcher's last check (switch agent-inbox-events): off, armed, ok or paused with a reason.
                         return self.send_json(200, {'switch': switch_on(config, agent_inbox.SWITCH), 'last': app.watcher.last})
                     if path == '/api/accounts':
-                        # connect_here: Google connects from inside Mail (switch connect-gmail-in-mail, wizard-connectors#21).
-                        return self.send_json(200, {**box.accounts(OWNER), 'connect_here': switch_on(config, 'connect-gmail-in-mail')})
+                        # connect_here: Google connects from inside Mail (wizard-connectors#21; on for everyone since wizard-mail#29).
+                        return self.send_json(200, {**box.accounts(OWNER), 'connect_here': True})
                     if path == '/api/connected-settings':
                         return self.send_json(200, box.connected_settings())
                     if path == '/api/messages':
@@ -441,8 +433,6 @@ def handler_for(app):
                 if path == '/api/update':
                     return self.send_json(200, box.update(body.get('account'), body.get('id'), body, OWNER))
                 if path == '/api/connected-connect':
-                    if not switch_on(config, 'connect-gmail-in-mail'):
-                        raise MailError(404, 'not_found', 'Not found.')
                     return self.send_json(200, box.connected_connect())
                 if path == '/api/connected-agent-access':
                     return self.send_json(200, box.connected_agent_access(body.get('mail')))

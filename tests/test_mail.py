@@ -533,8 +533,6 @@ class HttpTests(Base):
         self.assertEqual((status, doc['contract']), (200, 'wizard.app-switches/1'))
         self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
                          [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11']),
-                          ('connected-accounts-google', False, ['humanitylabs-org/wizard-connectors#15']),
-                          ('connect-gmail-in-mail', False, ['humanitylabs-org/wizard-connectors#21']),
                           ('agent-inbox-events', False, ['humanitylabs-org/wizard-mail#26'])])
         status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
         self.assertEqual((status, doc['switches'][0]['on']), (200, True))
@@ -740,7 +738,7 @@ class HttpTests(Base):
 
 
 class ConnectedAccountsTests(Base):
-    """Google through Connected accounts (switch connected-accounts-google, wizard-connectors#15)."""
+    """Google through Connected accounts (wizard-connectors#15, #21; on for everyone since wizard-mail#29)."""
     HOST, req = HttpTests.HOST, HttpTests.req
 
     def setUp(self):
@@ -761,19 +759,22 @@ class ConnectedAccountsTests(Base):
         Base.tearDown(self)
         self.c.close()
 
-    def switch(self, on):
+    def test_on_with_no_switch(self):
+        # wizard-mail#29: Connect Gmail ships on. No Mail switch on (and an old saved "off" ignored), Mail still lists
+        # Connected accounts' Google and offers to connect it from inside Mail.
+        (self.app.config.data_dir / 'switches.json').write_text(json.dumps({'connect-gmail-in-mail': False,
+                                                                             'connected-accounts-google': False}))
         sw = {'X-Wizard-Request': None, 'X-Wizard-Switch': '1'}
-        self.assertEqual(self.req('POST', '/api/switches', {'id': 'connected-accounts-google', 'on': on}, headers=sw)[0], 200)
-
-    def test_off_by_default_nothing_asks_connected_accounts(self):
+        ids = [s['id'] for s in self.req('GET', '/api/switches', headers=sw)[1]['switches']]
+        self.assertNotIn('connect-gmail-in-mail', ids)
+        self.assertNotIn('connected-accounts-google', ids)
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'connect-gmail-in-mail', 'on': True}, headers=sw)[0], 404)
         acc = self.req('GET', '/api/accounts')[1]
-        self.assertNotIn('connected', [s['id'] for s in acc['sources']])
-        self.assertEqual(self.req('GET', '/api/messages?account=connected:me@gmail.com&folder=inbox')[0], 400)
-        self.assertEqual(self.req('GET', '/api/connected-settings')[0], 404)
-        self.assertEqual(self.c.calls, [])
+        self.assertTrue(acc['connect_here'])
+        self.assertIn('connected', [s['id'] for s in acc['sources']])
+        self.assertEqual(self.req('GET', '/api/connected-settings')[0], 200)
 
     def test_on_mail_reads_gmail_through_connected_accounts(self):
-        self.switch(True)
         acc = self.req('GET', '/api/accounts')[1]
         src = next(s for s in acc['sources'] if s['id'] == 'connected')
         self.assertEqual([(a['key'], a['mail']) for a in src['accounts']], [('connected:me@gmail.com', True), ('connected:work@example.com', False)])
@@ -787,12 +788,10 @@ class ConnectedAccountsTests(Base):
         self.assertIn('connected', {m['source'] for m in self.req('GET', '/api/messages?account=all&folder=inbox')[1]['messages']})
 
     def test_agent_calls_name_the_agent(self):
-        self.switch(True)
         self.app.mailbox.list('connected:me@gmail.com', 'inbox', caller=sources.agent('helper'))
         self.assertEqual(self.c.calls[-1][3], 'helper')
 
     def test_settings_level_goes_to_connected_accounts(self):
-        self.switch(True)
         status, v, _ = self.req('GET', '/api/connected-settings')
         self.assertEqual((status, v['manage'], [a['email'] for a in v['accounts']]), (200, '/connected-accounts/', ['me@gmail.com', 'work@example.com']))
         self.c.tool = lambda name, a: {'agent_access': {'level': a['mail'], 'levels': []}} if name == 'agent_access' else FakeSource.tool(self.c, name, a)
@@ -801,19 +800,8 @@ class ConnectedAccountsTests(Base):
         self.assertEqual(self.c.calls[-1][:3], ('POST', 'agent_access', {'mail': 'read_only'}))
         self.assertIsNone(self.c.calls[-1][3])
 
-    def here(self, on):
-        sw = {'X-Wizard-Request': None, 'X-Wizard-Switch': '1'}
-        self.assertEqual(self.req('POST', '/api/switches', {'id': 'connect-gmail-in-mail', 'on': on}, headers=sw)[0], 200)
-
-    def test_connect_here_off_by_default(self):
-        self.switch(True)  # the older switch alone: the Connected accounts sheet, no connect from Mail
-        self.assertFalse(self.req('GET', '/api/accounts')[1]['connect_here'])
-        self.assertEqual(self.req('POST', '/api/connected-connect', {})[0], 404)
-        self.assertNotIn('connect', [c[1] for c in self.c.calls])
-
     def test_connect_here_starts_google_from_mail(self):
-        # wizard-connectors#21: one switch; Mail lists Connected accounts' Google and starts its Gmail sign-in.
-        self.here(True)
+        # wizard-connectors#21 (on since wizard-mail#29): Mail lists Connected accounts' Google and starts its Gmail sign-in.
         acc = self.req('GET', '/api/accounts')[1]
         self.assertTrue(acc['connect_here'])
         self.assertIn('connected', [s['id'] for s in acc['sources']])
@@ -827,13 +815,11 @@ class ConnectedAccountsTests(Base):
         self.assertEqual(self.req('POST', '/api/connected-connect', {})[0], 502)
 
     def test_connect_here_passes_connected_accounts_errors(self):
-        self.here(True)
         self.c.fail = (409, {'error': {'code': 'google_configuration_required', 'message': 'Set up your Google app in Connected accounts first.'}})
         status, v, _ = self.req('POST', '/api/connected-connect', {})
         self.assertEqual((status, v['error']['code']), (409, 'google_configuration_required'))
 
     def test_no_grant_yet_says_how_to_fix(self):
-        self.switch(True)
         self.grants_file.write_text(json.dumps({'outgoing': {'wizard-google': self.g.grant, 'wizard-microsoft': self.m.grant}}))
         src = next(s for s in self.req('GET', '/api/accounts')[1]['sources'] if s['id'] == 'connected')
         self.assertFalse(src['available'])
