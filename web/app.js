@@ -508,7 +508,7 @@
     setView('list');
     markOpen();
     // Empty the pane after it has slid away (phone) so the list underneath never jumps.
-    setTimeout(() => { if (state.view === 'list') reader.replaceChildren(); }, 260);
+    setTimeout(() => { if (state.view === 'list') { reader.replaceChildren(); dropFiles(); } }, 260);
     if (was) try { was.focus({ preventScroll: true }); } catch (_) {}
   }
   async function openMessage(m, images) {
@@ -535,6 +535,7 @@
     }
   }
   function renderReader(m, v) {
+    dropFiles();
     const msg = v.message;
     const bar = el('div', null, 'wm-rbar');
     bar.append(button('‹ Back', closeReader, 'wm-icon wm-back', { 'aria-label': 'Back to the list' }));
@@ -597,14 +598,11 @@
         button('Show pictures', () => openMessage(m, true), 'wz-button secondary small'));
       body.append(note);
     }
-    if (v.html) body.append(htmlFrame(v.html, v.images_shown));
+    const files = attachmentFiles(m, msg);
+    if (v.html) body.append(htmlFrame(v.html, v.images_shown, files));
     else body.append(el('div', msg.body_text || '', 'wm-text'));
     if (msg.truncated) body.append(el('p', 'This message is long; the end is cut off.', 'muted'));
-    if (msg.attachments && msg.attachments.length) {
-      const att = el('ul', null, 'wm-att');
-      for (const a of msg.attachments) att.append(el('li', `📎 ${a.name}${a.size ? ` · ${Math.max(1, Math.round(a.size / 1024))} KB` : ''}`));
-      body.append(att);
-    }
+    if (msg.attachments && msg.attachments.length) body.append(attachmentList(m, msg, v.html || '', files));
     bar.append(x);
     reader.replaceChildren(bar, head, body, thumb);
     reader.scrollTop = 0;
@@ -620,9 +618,124 @@
         : (e && e.message) || 'Could not open Chats. Nothing sent.');
     }
   }
-  function htmlFrame(html, images) {
+  // ---------- attachments (#32): photos show in the reader, files save with a tap ----------
+  // Pictures the browser can show; anything else is offered as a file to save. The bytes always come as a download
+  // (api/attachment), and a picture is only ever shown from a Blob typed as one of these, never as the sender said.
+  const PICTURE = /^image\/(jpeg|pjpeg|png|gif|webp|avif|bmp|heic|heif)$/;
+  let fileUrls = [];
+  function dropFiles() { for (const u of fileUrls) URL.revokeObjectURL(u); fileUrls = []; }
+  function attachmentFiles(m, msg) {
+    // One loader per file of this email: each is fetched at most once while the email is open.
+    const byPart = new Map(), byCid = new Map();
+    const all = [...(msg.attachments || []), ...(msg.inline_parts || [])];
+    for (const a of all) {
+      if (!a || !a.part) continue;
+      const mime = String(a.mime || '').toLowerCase();
+      const f = { ...a, mime, picture: PICTURE.test(mime), url: null };
+      f.load = () => f.url ? Promise.resolve(f.url) : (f.loading = f.loading || fetchFile(m, f).then(u => (f.url = u)));
+      byPart.set(a.part, f);
+      if (a.content_id) byCid.set(String(a.content_id).toLowerCase(), f);
+    }
+    return { byPart, byCid };
+  }
+  async function fetchFile(m, f) {
+    const q = new URLSearchParams({ account: m.account, id: m.id, part: f.part });
+    const r = await fetch(`api/attachment?${q}`, { credentials: 'same-origin', headers: { 'X-Wizard-Request': 'mail' } });
+    if (!r.ok) {
+      const v = await r.json().catch(() => ({}));
+      throw new Error((v.error && v.error.message) || 'Mail could not open that file.');
+    }
+    const raw = await r.blob();
+    const blob = new Blob([raw], { type: f.picture ? f.mime : 'application/octet-stream' });
+    const u = URL.createObjectURL(blob);
+    fileUrls.push(u);
+    return u;
+  }
+  function fileSize(n) { return n ? (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`) : ''; }
+  function cidsIn(html) {
+    const out = new Set();
+    for (const x of html.matchAll(/data-cid="([^"]*)"/g)) out.add(x[1].replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').toLowerCase());
+    return out;
+  }
+  function saveFile(f) {
+    say(`Saving ${f.name}…`);
+    f.load().then(u => {
+      // A detached link: the browser's own download, under the file's name.
+      const a = document.createElement('a');
+      a.href = u; a.download = f.name || 'file'; a.rel = 'noopener';
+      a.click();
+    }, e => say(e.message));
+  }
+  function viewPictures(list, i) {
+    const items = list.filter(f => f.url).map(f => ({ url: f.url, kind: 'image', name: f.name || '', mime: f.mime }));
+    const at = Math.max(0, items.findIndex(x => x.url === list[i].url));
+    try { if (window.WizardApp?.media?.view && window.WizardApp.media.view(items, at) === true) return; } catch (_) {}
+    // Outside Wizard (or an older shell): a plain full-size view with Download.
+    const f = list[i];
+    const shade = el('div', null, 'wm-viewer', { role: 'dialog', 'aria-label': f.name || 'Picture' });
+    const img = el('img', null, null, { src: f.url, alt: f.name || '' });
+    const close = () => { shade.remove(); removeEventListener('keydown', esc, true); };
+    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    const tools = el('div', null, 'wm-viewer-bar');
+    tools.append(button('Download', () => saveFile(f), 'wz-button secondary small'), button('Close', close, 'wz-button small'));
+    shade.append(img, tools);
+    shade.addEventListener('click', e => { if (e.target === shade) close(); });
+    addEventListener('keydown', esc, true);
+    document.body.append(shade);
+  }
+  function attachmentList(m, msg, html, files) {
+    const box = el('div', null, 'wm-files');
+    const shown = cidsIn(html);
+    const pictures = [], chips = el('ul', null, 'wm-att');
+    for (const a of msg.attachments) {
+      const f = a && a.part ? files.byPart.get(a.part) : null;
+      const label = `${a.name}${a.size ? ` · ${fileSize(a.size)}` : ''}`;
+      if (!f) { chips.append(el('li', `📎 ${label}`)); continue; }  // an older source app: name only
+      if (f.content_id && shown.has(String(f.content_id).toLowerCase())) continue;  // already in place in the email
+      if (f.picture) { pictures.push(f); continue; }
+      const li = el('li');
+      li.append(button(`📎 ${label}`, () => saveFile(f), 'wm-file', { title: `Save ${a.name}` }));
+      chips.append(li);
+    }
+    if (pictures.length) {
+      const strip = el('div', null, 'wm-pics');
+      pictures.forEach((f, i) => {
+        const tile = button('', () => f.url && viewPictures(pictures, i), 'wm-pic', { 'aria-label': `Open ${f.name} full size`, title: f.name });
+        tile.append(el('span', `Loading ${f.name}…`, 'wm-pic-wait'));
+        strip.append(tile);
+        f.load().then(u => {
+          const img = el('img', null, null, { src: u, alt: f.name || '' });
+          img.onerror = () => tile.replaceChildren(el('span', `📎 ${f.name} · this picture can't be shown here; tap to save it`, 'wm-pic-wait'));
+          img.onload = () => tile.classList.add('ready');
+          tile.replaceChildren(img);
+          tile.onclick = () => (tile.classList.contains('ready') ? viewPictures(pictures, i) : saveFile(f));
+        }, e => {
+          tile.replaceChildren(el('span', `📎 ${f.name}: ${e.message}`, 'wm-pic-wait'));
+          tile.onclick = () => saveFile(f);
+        });
+      });
+      box.append(strip);
+    }
+    if (chips.childNodes.length) box.append(chips);
+    return box;
+  }
+  function fillCids(doc, files, fit) {
+    // Pictures that came with the email, placed in its text as cid: (the sanitizer leaves data-cid, no address).
+    for (const img of doc.querySelectorAll('img[data-cid]')) {
+      const f = files && files.byCid.get(String(img.getAttribute('data-cid') || '').toLowerCase());
+      if (!f || !f.picture) continue;
+      f.load().then(u => {
+        img.addEventListener('load', fit);
+        img.src = u;
+        img.style.cursor = 'zoom-in';
+        img.addEventListener('click', () => viewPictures([f], 0));
+      }, () => {});
+    }
+  }
+  function htmlFrame(html, images, files) {
     // No scripts, no forms, no top navigation; same-origin only so this page can size the frame to its content.
-    const csp = `default-src 'none'; img-src data:${images ? ' https:' : ''}; style-src 'unsafe-inline'; font-src data:`;
+    // blob: is only ever this page's own copy of a picture that came with the email (fillCids).
+    const csp = `default-src 'none'; img-src data: blob:${images ? ' https:' : ''}; style-src 'unsafe-inline'; font-src data:`;
     const frame = el('iframe', null, 'wm-frame', { title: 'Message', sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', referrerpolicy: 'no-referrer' });
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">` +
       '<meta name="referrer" content="no-referrer"><base target="_blank"><style>html{color-scheme:light}body{margin:0;padding:18px 20px;background:Canvas;color:CanvasText;' +
@@ -647,6 +760,7 @@
       frameObserver.observe(doc.documentElement);
       if (doc.body) frameObserver.observe(doc.body);
       for (const img of doc.images) img.addEventListener('load', fit);
+      fillCids(doc, files, fit);
     });
     return box;
   }
@@ -889,7 +1003,7 @@
         return li;
       }));
     }
-    function size(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`; }
+    function fileSize(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`; }
     function addFiles(list) {
       const picked = Array.from(list || []);
       if (!picked.length) return;

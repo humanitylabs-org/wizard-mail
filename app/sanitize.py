@@ -6,6 +6,7 @@ and CSS backgrounds are removed unless the owner asked to show images for that m
 """
 import html
 import re
+import urllib.parse
 from html.parser import HTMLParser
 
 DROP_WITH_CONTENT = {'script', 'noscript', 'template', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'svg',
@@ -21,6 +22,7 @@ ATTRS = {'align', 'alt', 'bgcolor', 'border', 'cellpadding', 'cellspacing', 'col
          'role', 'summary', 'abbr', 'scope', 'headers', 'datetime', 'open'}
 BAD_CSS = re.compile(r'url\s*\(|expression\s*\(|javascript:|vbscript:|behavior\s*:|-moz-binding|@import|\\', re.I)
 URL_IN_CSS = re.compile(r'url\s*\(\s*([\'"]?)(.*?)\1\s*\)', re.I | re.S)
+CID = re.compile(r'[^\s"<>]{1,600}')
 SAFE_LINK = re.compile(r'^(https?:|mailto:|tel:|#)', re.I)
 MAX_OUT = 600_000
 
@@ -79,6 +81,11 @@ class _Cleaner(HTMLParser):
                 src = value.strip()
                 if src.lower().startswith('data:image/') and len(src) < 200_000:
                     pass
+                elif src.lower().startswith('cid:') and CID.fullmatch(src[4:].strip()):
+                    # A picture that came with the email (wizard-mail#32): not a tracking picture, so never blocked.
+                    # The frame gets no URL for it; Mail fills it in from the attachment with this Content-ID.
+                    kept.append(('data-cid', urllib.parse.unquote(src[4:].strip())[:300]))
+                    continue
                 elif self.images and src.lower().startswith('https://'):
                     pass
                 else:
@@ -90,7 +97,7 @@ class _Cleaner(HTMLParser):
                 if not value:
                     continue
             kept.append((name, value))
-        if tag == 'img' and not any(n == 'src' for n, _ in kept):
+        if tag == 'img' and not any(n in ('src', 'data-cid') for n, _ in kept):
             alt = next((v for n, v in kept if n == 'alt'), '')
             if alt:
                 self.out.append(f'<span class="wm-alt">{html.escape(alt[:200])}</span>')
