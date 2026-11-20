@@ -4,7 +4,7 @@ id: wizard-mail
 name: Mail
 type: service
 category: app
-version: 0.9.0
+version: 0.10.0
 icon: icon.png
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
 tags: [communication, productivity]
@@ -54,6 +54,7 @@ Your email in Wizard: one inbox for every Google and Microsoft account you conne
 - **Mark all as read.** One button at the top of the list marks every unread message in what you are looking at (all inboxes or one account, Inbox or Archive, and your search) as read in Gmail or Outlook itself. Undo puts them back.
 - **Phone and desktop.** One column on a phone; list and reader side by side, plus mailboxes, on a wide window.
 - **Settings, like Messenger's.** Connected accounts as tiles (tap one to see or disconnect it, + to connect another) and Agent access: No access, Read-only or Draft only (recommended, the default).
+- **Photos and files in emails** (since 0.10.0; wizard-mail#32). Photos that come with an email show in it, and picture attachments show under the text the width of the reader; tap one to see it full size. Other files are chips: tap to save. Needs the Google app 0.5.0, the Microsoft app 0.4.0 or Connected accounts 0.7.0 (older ones say to update).
 - **Attachments.** Attach files when you write, reply or forward (Forward brings the original's files along); each file shows as a chip you can remove. Editing a draft keeps its attachments. Up to 10 files, 18 MB together (Outlook accounts: 3 MB per file for now).
 - **For your agent:** `mail_accounts`, `mail_list`, `mail_read`, `mail_draft` (with attachments, or changing a draft in place) and `mail_mark_all_read` over MCP at `/mcp` (box only). The agent can write drafts but cannot send: you send from Mail. The Google and Microsoft apps enforce this themselves (their `mail_send` refuses agents), so it holds even when an agent calls them directly.
 
