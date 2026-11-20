@@ -112,6 +112,20 @@
 .wm-att { list-style: none; padding: 0; margin: var(--wz-space-3, 12px) 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .wm-att li { padding: 6px 10px; border-radius: var(--wz-radius-pill, 999px); border: 1px solid var(--line); color: var(--wz-text-secondary); font-size: var(--wz-text-sm, .8125rem); }
 .wz-button.small { padding: 6px 12px; min-height: 0; font-size: var(--wz-text-sm, .8125rem); }
+/* attachments in the reader (#32): photos as previews the reader's width, other files as chips that save */
+.wm-files { margin-top: var(--wz-space-3, 12px); display: grid; gap: var(--wz-space-2, 8px); }
+.wm-pics { display: grid; gap: var(--wz-space-2, 8px); }
+.wm-pic { display: block; width: 100%; padding: 0; border: 0; background: color-mix(in srgb, var(--wz-text) 5%, transparent); border-radius: var(--wz-radius, 12px);
+  overflow: hidden; cursor: zoom-in; color: var(--wz-text-secondary); font: inherit; text-align: left; }
+.wm-pic img { display: block; width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
+.wm-pic-wait { display: block; padding: var(--wz-space-4, 16px); font-size: var(--wz-text-sm, .8125rem); }
+.wm-att li:has(> .wm-file) { padding: 0; border: 0; }
+.wm-file { cursor: pointer; padding: 6px 10px; border-radius: var(--wz-radius-pill, 999px); border: 1px solid var(--line); background: transparent;
+  color: var(--wz-text); font: inherit; font-size: var(--wz-text-sm, .8125rem); min-height: 32px; }
+.wm-file:hover { background: color-mix(in srgb, var(--wz-text) 7%, transparent); }
+.wm-viewer { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / .86); padding: 16px; }
+.wm-viewer img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; }
+.wm-viewer-bar { position: fixed; top: 12px; right: 12px; display: flex; gap: 8px; }
 
 /* connect */
 .wm-hello { width: min(100%, 460px); display: grid; justify-items: center; text-align: center; gap: var(--wz-space-2, 8px); padding-top: 6vh; }

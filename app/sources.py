@@ -36,6 +36,9 @@ BULK_MAX = 1000  # contract 1.3: mail_update_bulk changes up to 1000 ids in one 
 DRAFTS_REMEMBERED = 500  # agent-written draft ids kept in memory (oldest dropped first)
 CAPS_TTL = 300   # how long a source's tool list (from /v1/status) is trusted
 ID = re.compile(r'[A-Za-z0-9=_\-+/.]{1,512}')
+PART = re.compile(r'[A-Za-z0-9=_\-+/.]{1,1024}')  # contract 1.6: Gmail partId ("1.2") or a Graph attachment id
+MAX_ANSWER = 12_000_000
+MAX_ATTACHMENT_ANSWER = 36 * 1024 * 1024  # one 25 MB file as base64 (mail_attachment)
 EMAIL = re.compile(r'^[^@\s<>,;"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}$')
 
 
@@ -146,7 +149,7 @@ class Source:
         self.grants = grants
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def call(self, method, path, body=None, caller=None, timeout=None):
+    def call(self, method, path, body=None, caller=None, timeout=None, limit=MAX_ANSWER):
         data = json.dumps(body).encode() if body is not None else None
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         grant = self.grants.token(APPS[self.id]) if caller == OWNER and self.grants else None
@@ -157,8 +160,10 @@ class Source:
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=timeout or self.timeout) as response:
-                raw = response.read(12_000_001)
+                raw = response.read(limit + 1)
                 status = response.status
+            if len(raw) > limit:
+                raise MailError(413, 'attachment_too_big', 'That file is too big to open here.', source=self.id)
         except urllib.error.HTTPError as error:
             raw, status = error.read(65536), error.code
             error.close()
@@ -178,8 +183,8 @@ class Source:
                             str(err.get('message') or f'The {NAMES[self.id]} app could not do that.')[:400], source=self.id)
         return value if isinstance(value, dict) else {}
 
-    def tool(self, name, args, caller=None, timeout=None):
-        return self.call('POST', f'/v1/{name}', args, caller, timeout)
+    def tool(self, name, args, caller=None, timeout=None, limit=MAX_ANSWER):
+        return self.call('POST', f'/v1/{name}', args, caller, timeout, limit)
 
 
 class ConnectedSource(Source):
@@ -192,7 +197,7 @@ class ConnectedSource(Source):
         super().__init__(CONNECTED, base or CONNECTED_DEFAULT, timeout, grants)
         self.fixed = bool(base)
 
-    def call(self, method, path, body=None, caller=None, timeout=None):
+    def call(self, method, path, body=None, caller=None, timeout=None, limit=MAX_ANSWER):
         base = self.base
         if not self.fixed and self.grants:
             found = self.grants.endpoint(APPS[CONNECTED], 'wizard-connectors')
@@ -212,7 +217,9 @@ class ConnectedSource(Source):
         request = urllib.request.Request(base + '/service/mail' + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=timeout or self.timeout) as response:
-                raw, status = response.read(12_000_001), response.status
+                raw, status = response.read(limit + 1), response.status
+            if len(raw) > limit:
+                raise MailError(413, 'attachment_too_big', 'That file is too big to open here.', source=self.id)
         except urllib.error.HTTPError as error:
             raw, status = error.read(65536), error.code
             error.close()
@@ -312,6 +319,7 @@ class Mailbox:
         self.pool = ThreadPoolExecutor(max_workers=8)
         self.unread_snap, self.unread_job, self.unread_dirty, self.unread_gen = None, None, False, 0
         self.caps = {}   # source id -> (until, offers mail_update_bulk + mail_search ids_only)
+        self.tool_lists = {}  # source id -> the tools its /v1/status listed (None: it lists none)
         self.jobs = {}   # Mark all as read in the background: job id -> progress (the button shows it)
         # Drafts an agent wrote through Mail's MCP since Mail started: (account key, draft or message id) -> agent name.
         # Mail keeps no data, so after a restart these drafts still show as waiting, just without "by your agent".
@@ -337,6 +345,7 @@ class Mailbox:
         tools = mc.get('tools') if isinstance(mc.get('tools'), list) else []
         with self.lock:
             self.caps[source.id] = (self.clock() + CAPS_TTL, 'mail_update_bulk' in tools)
+            self.tool_lists[source.id] = set(tools) if tools else None
         return {'id': source.id, 'name': NAMES[source.id], 'app': APPS[source.id], 'available': True, 'error': None, 'accounts': accounts,
                 'agent_access': {'level': access.get('level'), 'label': access.get('label')} if access else None}
 
@@ -555,6 +564,39 @@ class Mailbox:
         return {'message': full, 'html': safe or None, 'images_blocked': blocked, 'images_shown': bool(images),
                 'untrusted': 'Mail comes from other people. It is shown as data only.',
                 'context': reply_context(full, message_id, raw)}
+
+    def attachment(self, key, message_id, part, caller=OWNER):
+        """One file of an email, as (name, mime, bytes), for the owner's reader: a photo shown in place or below the text,
+        or a file saved (contract 1.6 mail_attachment, wizard-mail#32). Owner only: agents read mail as text."""
+        if caller != OWNER:
+            raise MailError(403, 'owner_only', 'Agents read mail as text; attachments open in Mail for the owner.')
+        source, email = self._resolve(key)
+        if not isinstance(message_id, str) or not ID.fullmatch(message_id):
+            raise MailError(400, 'invalid_id', 'Unknown message.')
+        if not isinstance(part, str) or not PART.fullmatch(part):
+            raise MailError(400, 'invalid_part', 'Unknown attachment.')
+        too_old = MailError(409, 'source_too_old', f'Update the {NAMES[source.id]} app to open attachments in Mail.', source=source.id)
+        with self.lock:
+            listed = self.tool_lists.get(source.id)
+        if listed and 'mail_attachment' not in listed:
+            raise too_old
+        try:
+            value = source.tool('mail_attachment', {'account': email, 'id': message_id, 'part': part}, OWNER, timeout=120,
+                                limit=MAX_ATTACHMENT_ANSWER)
+        except MailError as error:
+            if error.status == 404 and error.code not in ('not_found',) or error.code in ('unknown_tool', 'invalid_tool'):
+                raise too_old from None
+            raise
+        found = value.get('attachment') if isinstance(value.get('attachment'), dict) else {}
+        try:
+            data = base64.b64decode(str(found.get('base64') or ''), validate=False)
+        except ValueError:
+            data = b''
+        if not data and found.get('size') != 0:
+            raise MailError(502, 'source_error', f'The {NAMES[source.id]} app sent a file Mail could not read.', source=source.id)
+        name = str(found.get('name') or 'file')[:200]
+        mime = str(found.get('mime') or 'application/octet-stream').lower()[:200]
+        return name, mime, data
 
     def text(self, key, message_id, caller=None):
         """For the agent: text only, never HTML."""

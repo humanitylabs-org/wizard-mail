@@ -259,7 +259,7 @@ def handler_for(app):
             self.send_header('Referrer-Policy', 'no-referrer')
             # Mail bodies render in a sandboxed srcdoc frame (no scripts) that inherits this policy and adds its own,
             # stricter one: remote images only when the owner taps Show images.
-            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
+            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
                              "script-src 'self'; connect-src 'self'; font-src 'self' data:; frame-src 'self'; object-src 'none'; "
                              f"form-action 'none'; base-uri 'none'; frame-ancestors {config.frame_ancestors}")
 
@@ -388,6 +388,18 @@ def handler_for(app):
                         return self.send_json(200, box.drafts(query.get('account') or 'all', OWNER))
                     if path == '/api/mark-all-read':
                         return self.send_json(200, box.mark_job(query.get('job'), OWNER))
+                    if path == '/api/attachment':
+                        # One file of an email (wizard-mail#32): the reader shows photos from it and saves other files.
+                        # Always sent as bytes to download, never as a page or a picture this host would render.
+                        name, mime, data = box.attachment(query.get('account'), query.get('id'), query.get('part'), OWNER)
+                        self.send_response(200)
+                        self.headers_common('application/octet-stream')
+                        self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(name, safe=''))
+                        self.send_header('X-Wizard-Mail-Type', re.sub(r'[^a-z0-9.+/-]', '', mime)[:100] or 'application/octet-stream')
+                        self.send_header('Content-Length', str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
                     if path == '/api/message':
                         return self.send_json(200, box.read(query.get('account'), query.get('id'), query.get('images') == '1', OWNER))
                     raise MailError(404, 'not_found', 'Not found.')

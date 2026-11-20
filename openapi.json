@@ -151,6 +151,59 @@
     }
    }
   },
+  "/api/attachment": {
+   "get": {
+    "summary": "One file of an email (owner only, #32): photos in the reader, files to save. Always bytes as application/octet-stream; X-Wizard-Mail-Type names the file type.",
+    "parameters": [
+     {
+      "name": "X-Wizard-Request",
+      "in": "header",
+      "required": true,
+      "schema": {
+       "const": "mail"
+      }
+     },
+     {
+      "name": "account",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "part",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The file",
+      "content": {
+       "application/octet-stream": {}
+      }
+     },
+     "409": {
+      "description": "source_too_old: update the source app"
+     },
+     "413": {
+      "description": "attachment_too_big (over 25 MB)"
+     }
+    }
+   }
+  },
   "/api/message": {
    "get": {
     "summary": "One message; HTML cleaned (no scripts, remote pictures only with images=1). Also `context` {id, title, message}: the email as plain text for Reply in chat (an unsent Chats draft to the owner's agent).",
