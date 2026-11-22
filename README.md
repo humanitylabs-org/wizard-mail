@@ -22,3 +22,20 @@ Drafts waiting (0.5.2; since 0.5.3 behind the owner switch `drafts-waiting`, off
 Attachments (0.5.0): compose has an Attach chip (file picker, several files, or drop files on the sheet); each file shows as a chip with its size and ✕. Editing a draft changes that same draft in place (`draft_id`, from the source's `mail_get`) and keeps its files as removable chips; Forward carries the original's files (`attachments_from`). `POST /api/draft` and MCP `mail_draft` take `attachments: [{name, mime?, base64}]`, `draft_id`, `remove_attachments`, `attachments_from` (contract 1.2 in the Google/Microsoft apps' `docs/mail-calendar-contract.md`); at most 10 files and 18 MB together (Outlook: 3 MB per file), refused plainly above that (`files_too_big`). Mail's request cap is 26 MB for `/api/draft` and `/mcp` only. An older source app that would ignore the files gets `source_too_old` ("Update the Google app") instead of a draft without them.
 
 Reply in chat (0.4.2): an open email has a Reply in chat chip (0.4.3: in the row under the sender beside Mark unread, at every width, so the phone bottom bar stays Reply / Archive / Delete) that opens an unsent Chats draft with the email attached through the shared `WizardApp.nav.openContextDraft` (shown only on shells that have it). The context comes with `GET /api/message` as `context` {id, title, message}, so the tap needs no fetch. It is called Reply in chat, not Reply, because Reply already answers the sender by email.
+
+On-box store (owner switch `on-box-store`, off by default; wizard-mail#35, `app/store.py`): the recipe runs the stock
+Stalwart image as `wizard-mail-store` next to Mail, on the app network only (no published port; its start turns off
+every listener but plain JMAP on :8080 after the first setup). Its start writes the store's admin secret once to
+`/data/store/secret` (in Mail's data dir, which both containers mount; Mail only reads it) and its RocksDB under
+`/data/store/db`. With the switch on, Mail signs in as the one owner mailbox (`owner@mail.wizard.internal`, through
+the admin as master user) and copies each connected account into `<account key>/Inbox|Archive|Sent|Trash`: the newest
+two pages of each folder on every check (new mail, read state, moves), the older mail page by page from where it
+stopped (progress in `/data/store-sync.json`), and every 15 minutes the whole Inbox is compared with the provider's
+(ids only where offered) so mail archived or read elsewhere follows. Copies are rebuilt from `mail_get` (HTML) plus
+every file and inline picture (`mail_attachment`); a file that could not be fetched becomes a note naming the
+provider part, which the reader then opens from the provider. Each copy carries `X-Wizard-Mail-Id: <account> <id>`
+and a `$wz…` keyword (to find it again), so every action keeps going to the provider by its own id; Mail writes the
+owner's archive/delete/read to the store at once. Once an account is fully copied, the owner's lists without a search
+(not Drafts), the reader and its files come from the store; searches, Drafts, agents (their access level is enforced
+by the source app), the unread badge and any time the store does not answer go to the providers as before.
+`GET /api/store` (owner) shows each account's progress and the last check.
