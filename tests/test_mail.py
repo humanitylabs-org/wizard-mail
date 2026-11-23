@@ -605,7 +605,8 @@ class HttpTests(Base):
         self.assertEqual((status, doc['contract']), (200, 'wizard.app-switches/1'))
         self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
                          [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11']),
-                          ('agent-inbox-events', False, ['humanitylabs-org/wizard-mail#26'])])
+                          ('agent-inbox-events', False, ['humanitylabs-org/wizard-mail#26']),
+                          ('on-box-store', False, ['humanitylabs-org/wizard-mail#35'])])
         status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
         self.assertEqual((status, doc['switches'][0]['on']), (200, True))
         self.assertTrue(self.req('GET', '/api/switches', headers=sw)[1]['switches'][0]['on'])
