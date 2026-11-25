@@ -1,10 +1,10 @@
-"""Mail watcher for the agent inbox (owner switch `agent-inbox-events`, off by default; wizard-mail#26).
+"""Mail watcher for the agent inbox (wizard-mail#26; on for everyone, its switch `agent-inbox-events` is gone).
 
 Mail is the first app watcher of the Agent Service's alert rules (wizard-agent-service#552): each new incoming mail is
 posted once as a candidate event to `POST /wizard/v1/agent-inbox/events`, where the Service decides what reaches
 Alerts and what waits for the next sweep. Only the subject, the sender and a short snippet leave Mail, never the body.
 
-- New means: unread in an inbox and first seen after the switch went on. Turning the switch on takes the mail
+- New means: unread in an inbox and first seen after the watcher's first check. That first check takes the mail
   already waiting as seen (no flood of old mail); mail older than MAX_AGE_S is never posted.
 - The same message posted again is the same record at the Service (source app + item), so a retry is safe.
 - 404 (the owner's `wizard/agent-inbox` switch is off), a refusal or an unreachable Service: post nothing more
@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-SWITCH = 'agent-inbox-events'
+RETIRED_SWITCH = 'agent-inbox-events'  # on for everyone since Mail 0.12.0; a saved state for it is cleared
 EVENTS_PATH = '/wizard/v1/agent-inbox/events'
 DEFAULT_SERVICE = 'http://wizard-agent-service:8787'
 CHECK_S = 120          # how often Mail looks for new mail (its unread snapshot refreshes every minute)
@@ -64,8 +64,8 @@ def event_for(m):
 
 
 class Watcher:
-    def __init__(self, mailbox, data_dir, on, service=DEFAULT_SERVICE, token='', clock=time.time, post=None):
-        self.mailbox, self.on, self.clock = mailbox, on, clock
+    def __init__(self, mailbox, data_dir, service=DEFAULT_SERVICE, token='', clock=time.time, post=None):
+        self.mailbox, self.clock = mailbox, clock
         self.path = Path(data_dir) / STATE_FILE
         self.url = (service or DEFAULT_SERVICE).rstrip('/') + EVENTS_PATH
         self.token = token
@@ -73,7 +73,7 @@ class Watcher:
         self.lock = threading.Lock()
         self.last = {}
 
-    # ---- state on the box: whether the watcher is armed, and the message keys already handled ----
+    # ---- state on the box: whether the watcher has taken the mail waiting at its first check (armed), and the message keys already handled ----
     def _load(self):
         try:
             state = json.loads(self.path.read_text())
@@ -110,12 +110,6 @@ class Watcher:
         """One look for new mail. Returns what happened (also kept in self.last)."""
         with self.lock:
             state = self._load()
-            if not self.on():
-                if state['armed']:  # off again: the next switch-on starts from the mail waiting then
-                    state['armed'] = False
-                    self._save(state)
-                self.last = {'state': 'off'}
-                return self.last
             try:
                 messages, _more = self.mailbox.unread(wait=30)
             except Exception:  # noqa: BLE001 - sources down or still loading: try at the next check
