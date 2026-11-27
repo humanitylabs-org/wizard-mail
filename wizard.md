@@ -7,6 +7,7 @@ category: app
 version: 0.12.0
 icon: icon.png
 summary: One inbox for the Google and Microsoft accounts on your Wizard. Connect from inside Mail; read, search, write and send.
+personal_data: reads your email   # holds the owner's personal data (wizard-os spec/WIZARD_MD.md "Personal data"); a label only
 tags: [communication, productivity]
 license: GPL-3.0-only
 source: https://github.com/oscarhenrycollins/wizard-mail
