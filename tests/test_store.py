@@ -1,4 +1,4 @@
-"""On-box mail store tests (switch on-box-store, wizard-mail#35). Stalwart is a fake (labelled) speaking the small part
+"""On-box mail store tests (wizard-mail#35, on for everyone). Stalwart is a fake (labelled) speaking the small part
 of JMAP Mail uses over real HTTP; the Google app is the fake from test_mail. Nothing talks to Google or Microsoft."""
 import base64
 import email
@@ -249,9 +249,8 @@ class StoreBase(unittest.TestCase):
         grants = self.dir / 'grants.json'
         grants.write_text(json.dumps({'outgoing': {'wizard-google': self.g.grant}}))
         self.box = sources.Mailbox({'google': self.g.base}, grants_file=str(grants))
-        self.on = [True]
         self.store = store.Store(self.stw.url, str(self.dir / 'secret'))
-        self.sync = store.Sync(self.box, self.store, self.dir, lambda: self.on[0])
+        self.sync = store.Sync(self.box, self.store, self.dir)
         self.box.store_view = store.View(self.store, self.sync)
 
     def tearDown(self):
@@ -278,13 +277,11 @@ class StoreBase(unittest.TestCase):
 
 
 class StoreTests(StoreBase):
-    def test_off_by_default_reads_providers_and_touches_no_store(self):
-        self.on[0] = False
-        self.assertFalse(self.sync.check())
+    def test_before_the_first_check_reads_providers_and_touches_no_store(self):
         page = self.box.list(self.KEY, 'inbox', caller=sources.OWNER)
         self.assertNotIn('store', page)
         self.assertEqual(self.stw.calls, [])
-        self.assertEqual(self.sync.status()['last']['state'], 'off')
+        self.assertEqual(self.sync.status(), {'accounts': {}, 'last': {}})
 
     def test_import_sets_up_one_mailbox_and_turns_off_the_other_listeners(self):
         self.import_all()
@@ -367,12 +364,6 @@ class StoreTests(StoreBase):
         self.assertFalse(self.sync.check())
         self.assertEqual(self.sync.status()['last']['state'], 'paused')
 
-    def test_switching_off_returns_to_direct_reading(self):
-        self.import_all()
-        self.on[0] = False
-        self.box._changed()
-        self.assertNotIn('store', self.box.list(self.KEY, 'inbox', caller=sources.OWNER))
-
     def test_keeps_syncing_new_mail_read_state_and_moves(self):
         self.import_all()
         self.g.folders['inbox'].insert(0, 'i99')
@@ -428,16 +419,20 @@ class StoreTests(StoreBase):
 
 
 class StoreHttpTests(StoreBase):
-    def test_switch_and_status(self):
+    def test_on_for_everyone_without_a_switch(self):
+        (self.dir / 'switches.json').write_text(json.dumps({store.RETIRED_SWITCH: False, 'drafts-waiting': True}))
         config = server.Config({'PORT': '0', 'MAIL_SOURCES': f'google={self.g.base}', 'MAIL_DATA': str(self.dir),
                                 'MAIL_STORE_URL': self.stw.url, 'MAIL_STORE_SECRET_FILE': str(self.dir / 'secret')})
         app = server.App(config)
         self.assertIsInstance(app.mailbox.store_view, store.View)
-        found = next(s for s in server.switches_doc(config)['switches'] if s['id'] == store.SWITCH)
-        self.assertEqual((found['on'], found['default'], found['issues']), (False, False, ['humanitylabs-org/wizard-mail#35']))
-        self.assertEqual(app.sync.status()['switch'], False)
-        server.set_switch(config, store.SWITCH, True)
-        self.assertEqual(app.sync.status()['switch'], True)
+        self.assertNotIn(store.RETIRED_SWITCH, [s['id'] for s in server.switches_doc(config)['switches']])
+        self.assertEqual(json.loads((self.dir / 'switches.json').read_text()), {'drafts-waiting': True})
+        self.assertNotIn('switch', app.sync.status())
+        for _ in range(20):    # a stored off is gone: the store imports and serves the owner's lists
+            if not app.sync.check():
+                break
+        app.mailbox._changed()
+        self.assertTrue(app.mailbox.list(self.KEY, 'inbox', caller=sources.OWNER).get('store'))
 
 
 class StoreRecipeTests(unittest.TestCase):

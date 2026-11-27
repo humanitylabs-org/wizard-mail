@@ -12,7 +12,7 @@ FILES = sorted(['openapi.json'] + [f'app/{p.name}' for p in (ROOT / 'app').glob(
                + [f'web/{p.name}' for p in (ROOT / 'web').iterdir() if p.suffix in ('.html', '.js', '.css', '.svg')])
 IMAGE = 'python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4'
 PORT = 18818
-# The on-box mail store (switch on-box-store, wizard-mail#35): the stock Stalwart image, never published. Its start
+# The on-box mail store (wizard-mail#35): the stock Stalwart image, never published. Its start
 # writes the store's admin secret (once) and its one-line config into Mail's /data/store, then runs Stalwart as is.
 STORE_IMAGE = 'stalwartlabs/stalwart:v1.1.1-alpine@sha256:53ce86ed60f3730a031b09721b9b83b80e062f2f2095ea0e9b343bdd4ff6cc2e'
 STORE_START = ('set -eu; S=/var/lib/wizard-mail/store; umask 077; mkdir -p "$$S/db"; '
@@ -26,7 +26,7 @@ LOADER = ("import base64,json,pathlib,runpy,zlib\nroot=pathlib.Path('/tmp/wizard
           "for name,text in files.items():\n p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\n"
           "runpy.run_path(str(root/'app/server.py'),run_name='__main__')\n")
 HEAD = f"""# Mail: one stdlib Python container; the app source is inlined below (refresh with `python3 tools/package.py`).
-# Mail asks the Google and Microsoft apps over the Wizard app network. With the switch on-box-store on, it also copies
+# Mail asks the Google and Microsoft apps over the Wizard app network. It also copies
 # that mail into wizard-mail-store (stock Stalwart, on the app network only) and reads it from there.
 services:
   wizard-mail:

@@ -604,7 +604,7 @@ class HttpTests(Base):
 
     def test_retired_switch_states_are_cleared(self):
         path = self.app.config.data_dir / 'switches.json'
-        path.write_text(json.dumps({'agent-inbox-events': False, 'connect-gmail-in-mail': False, 'drafts-waiting': True}))
+        path.write_text(json.dumps({'agent-inbox-events': False, 'connect-gmail-in-mail': False, 'on-box-store': False, 'drafts-waiting': True}))
         server.clear_retired_switches(self.app.config)
         self.assertEqual(json.loads(path.read_text()), {'drafts-waiting': True})
 
@@ -613,8 +613,8 @@ class HttpTests(Base):
         status, doc, _ = self.req('GET', '/api/switches', headers=sw)
         self.assertEqual((status, doc['contract']), (200, 'wizard.app-switches/1'))
         self.assertEqual([(s['id'], s['on'], s['issues']) for s in doc['switches']],
-                         [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11']),
-                          ('on-box-store', False, ['humanitylabs-org/wizard-mail#35'])])
+                         [('drafts-waiting', False, ['humanitylabs-org/wizard-mail#11'])])
+        self.assertEqual(self.req('POST', '/api/switches', {'id': 'on-box-store', 'on': False}, headers=sw)[0], 404)
         status, doc, _ = self.req('POST', '/api/switches', {'id': 'drafts-waiting', 'on': True}, headers=sw)
         self.assertEqual((status, doc['switches'][0]['on']), (200, True))
         self.assertTrue(self.req('GET', '/api/switches', headers=sw)[1]['switches'][0]['on'])

@@ -1,5 +1,5 @@
-"""Mail's on-box store: stock Stalwart, with Gmail and Outlook imported into it (switch `on-box-store`, off by default;
-wizard-mail#35).
+"""Mail's on-box store: stock Stalwart, with Gmail and Outlook imported into it (wizard-mail#35; on for everyone
+since Mail 0.13.0, its switch `on-box-store` is gone).
 
 Stalwart runs next to Mail as the stock image (service `wizard-mail-store` in runtipi/docker-compose.yml) and is
 reachable only on the Wizard app network, never published: the box is only on the tailnet. Mail talks to it over JMAP
@@ -15,7 +15,7 @@ on its first start; never logged, never returned).
   over. What the owner does in Mail is written to the store at once too.
 - Reading: once an account is fully imported, the owner's lists (without a search) and the reader come from the store.
   Until then, for searches, Drafts, agents (whose access level the source app enforces) and whenever the store does
-  not answer, Mail reads Gmail and Outlook directly, exactly as with the switch off.
+  not answer, Mail reads Gmail and Outlook directly.
 Stdlib only.
 """
 import base64
@@ -34,7 +34,7 @@ import urllib.request
 from email.message import EmailMessage
 from pathlib import Path
 
-SWITCH = 'on-box-store'
+RETIRED_SWITCH = 'on-box-store'  # on for everyone since Mail 0.13.0; a saved state for it is cleared
 DEFAULT_URL = 'http://wizard-mail-store:8080'
 DEFAULT_SECRET = '/data/store/secret'
 DOMAIN = 'mail.wizard.internal'
@@ -406,10 +406,10 @@ def rebuild(message, fetch):
 
 
 class Sync:
-    """Copies every connected account into the store and keeps it in step (switch on-box-store)."""
+    """Copies every connected account into the store and keeps it in step."""
 
-    def __init__(self, mailbox, store, data_dir, on, clock=time.time, sleep=None):
-        self.mailbox, self.store, self.on, self.clock = mailbox, store, on, clock
+    def __init__(self, mailbox, store, data_dir, clock=time.time, sleep=None):
+        self.mailbox, self.store, self.clock = mailbox, store, clock
         self.path = Path(data_dir) / STATE_FILE
         self.lock = threading.Lock()
         self.wake = threading.Event()
@@ -451,13 +451,10 @@ class Sync:
             accounts = {k: {'imported': a.get('imported', 0),
                             'complete': all((a.get('folders') or {}).get(f, {}).get('done') for f in FOLDERS)}
                         for k, a in self.state['accounts'].items()}
-        return {'switch': bool(self.on()), 'accounts': accounts, 'last': self.last}
+        return {'accounts': accounts, 'last': self.last}
 
     # ---- one check ----
     def check(self):
-        if not self.on():
-            self.last = {'state': 'off', 'at': self.clock()}
-            return False
         import sources  # noqa: PLC0415 - the module that made this Sync's mailbox
         try:
             self.store.ready()
@@ -628,8 +625,6 @@ class Sync:
 
     # ---- what the owner does in Mail, written to the store at once ----
     def mirror(self, key, pid, flags):
-        if not self.on():
-            return
         try:
             have = self.store.find(key, [pid]).get(pid)
             if not have:
@@ -664,7 +659,7 @@ class View:
         self.store, self.sync = store, sync
 
     def serves(self, keys):
-        return bool(keys) and self.sync.on() and all(self.sync.complete(k) for k in keys)
+        return bool(keys) and all(self.sync.complete(k) for k in keys)
 
     def list(self, keys, folder, position, limit, unread):
         """[(key, summary)], next position; None when the store cannot answer (Mail then asks the providers)."""
@@ -695,7 +690,7 @@ class View:
 
     def mirror(self, items, flags):
         """The owner's change in Mail, written to the store in the background: items [(key, pid)]."""
-        if not items or not self.sync.on():
+        if not items:
             return
 
         def run():
