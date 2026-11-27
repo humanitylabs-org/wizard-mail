@@ -326,7 +326,7 @@ class Mailbox:
         # Drafts an agent wrote through Mail's MCP since Mail started: (account key, draft or message id) -> agent name.
         # Mail keeps no data, so after a restart these drafts still show as waiting, just without "by your agent".
         self.agent_drafts = {}
-        # The on-box store (switch on-box-store, wizard-mail#35): store.View, or None. It answers the owner's lists and
+        # The on-box store (wizard-mail#35, on for everyone): store.View, or None. It answers the owner's lists and
         # reader once an account is fully imported; everything else, and any time it does not answer, goes direct.
         self.store_view = None
 

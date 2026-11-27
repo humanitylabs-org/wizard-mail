@@ -23,11 +23,11 @@ Attachments (0.5.0): compose has an Attach chip (file picker, several files, or 
 
 Reply in chat (0.4.2): an open email has a Reply in chat chip (0.4.3: in the row under the sender beside Mark unread, at every width, so the phone bottom bar stays Reply / Archive / Delete) that opens an unsent Chats draft with the email attached through the shared `WizardApp.nav.openContextDraft` (shown only on shells that have it). The context comes with `GET /api/message` as `context` {id, title, message}, so the tap needs no fetch. It is called Reply in chat, not Reply, because Reply already answers the sender by email.
 
-On-box store (owner switch `on-box-store`, off by default; wizard-mail#35, `app/store.py`): the recipe runs the stock
+On-box store (on for everyone since 0.13.0, its switch `on-box-store` is gone; wizard-mail#35, `app/store.py`): the recipe runs the stock
 Stalwart image as `wizard-mail-store` next to Mail, on the app network only (no published port; its start turns off
 every listener but plain JMAP on :8080 after the first setup). Its start writes the store's admin secret once to
 `/data/store/secret` (in Mail's data dir, which both containers mount; Mail only reads it) and its RocksDB under
-`/data/store/db`. With the switch on, Mail signs in as the one owner mailbox (`owner@mail.wizard.internal`, through
+`/data/store/db`. Mail signs in as the one owner mailbox (`owner@mail.wizard.internal`, through
 the admin as master user) and copies each connected account into `<account key>/Inbox|Archive|Sent|Trash`: the newest
 two pages of each folder on every check (new mail, read state, moves), the older mail page by page from where it
 stopped (progress in `/data/store-sync.json`), and every 15 minutes the whole Inbox is compared with the provider's
